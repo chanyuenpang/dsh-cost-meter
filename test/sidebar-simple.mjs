@@ -8,10 +8,16 @@ import { stateSchema } from '../lib/typert.host.js'
 
 const dir = new URL('../src/client/', import.meta.url)
 const source = readdirSync(dir).filter(n => n.endsWith('.js')).sort().map(n => readFileSync(new URL(n, dir), 'utf8')).join('')
-let factory, hookIndex = 0, hooks = []
+assert.ok(source.includes('.cm-compact-ring > svg:first-child{width:28px'), '进度 SVG 的尺寸规则不能命中中间的 Codex 图标')
+assert.ok(source.includes('.cm-compact-icon{position:absolute;width:13px'), '品牌图标保留较小尺寸并露出圆环')
+assert.ok(source.includes(':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer){position:relative}'), '原生与替换侧栏都提供定位容器')
+assert.ok(source.includes(':is([class*="_settingsArea"],.dbt-settings) > [class*="_triggerRow"]'), '两种设置行都为圆环保留宽度')
+let factory, hookIndex = 0, hooks = [], requests = 0, responseOk = true
 const storage = new Map()
 vm.runInNewContext(source.replace('exports.apply = apply', 'exports.test = { SidebarSimpleGuide, QuotaStripGuide, BalanceClickGuide, SidebarFooter, parseConfig, codexQuotaCache }; exports.apply = apply'), {
   navigator: { language: 'en' }, window: { __ModuleLoader__: { load: v => { factory = v.factory } }, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } },
+  AbortSignal: { timeout: () => undefined },
+  fetch: async path => { assert.equal(path, '/plugins/dsh-openai-codex/auth/status'); requests++; return { ok: responseOk, json: async () => ({ status: 'signed-in', usage: { rateLimits: [{ id: 'codex', windows: [{ windowSeconds: 604800, remainingPercent: 52, resetAt: 1790000000 }] }] } }) } },
 })
 const el = (type, props, ...children) => ({ type, props: props ?? {}, children })
 const React = { createElement: el, Fragment: 'fragment', useEffect() {},
@@ -83,21 +89,52 @@ const totals = { cost: 1, calls: 1, input: 100, output: 20, cacheRead: 0, cacheW
 const win = { percent: 25, resetsAt: new Date(Date.now() + 3600000).toISOString() }
 config = sanitizeConfig({ ...base, budget: { enabled: true }, codingPlans: { kimi: { enabled: true, display: 'sidebar' } }, sidebarSimple: true, sidebarSimplePromptSeen: true })
 const state = { config, today: totals, month: totals, total: totals, codingPlans: { kimi: { status: 'ok', windows: { daily: win }, fetchedAt: Date.now() } }, gatewayQuotas: { sources: [] } }
-ui.codexQuotaCache.status = 'unavailable'
+ui.codexQuotaCache.status = 'ok'
+ui.codexQuotaCache.windows = { weekly: { percent: 37, resetsAt: win.resetsAt } }
+ui.codexQuotaCache.fetchedAt = Date.now()
+state.config = { ...config, codexQuotaEnabled: true }
 const footer = wide => { hooks = []; hookIndex = 0; return ui.SidebarFooter({ wide, useCost: pick => pick({ state }), api }) }
 const simple = footer(true)
-assert.match(simple.props.className, /simple/)
-assert.doesNotMatch(simple.props.className, /compact/)
-assert.equal(simple.props.tabIndex, 0, '可用键盘进入并滚动')
-const countCards = tree => nodes(tree).filter(n => typeof n.type === 'function').length
-assert.equal(nodes(simple).filter(n => n.props.summary === true).length, 1, '预算与今日合并为一个摘要')
-assert.match(footer(false).props.className, /rail.*simple/)
+assert.equal(typeof simple.type, 'function', '简化视图挂载独立紧凑组件')
+const compact = simple.type(simple.props)
+assert.equal(compact.props.className, 'cm-compact-footer')
+assert.equal(compact.children[0].props.percent, 63, 'Codex 环按剩余额度而非已用额度')
+assert.ok(compact.children[1].props.percent >= 0 && compact.children[1].props.percent <= 100, '峰谷环按八小时剩余时长缩放')
+assert.equal(compact.children[2].type, 'tooltip', '当日费用仅保留金额与悬停提示')
+const codexRing = compact.children[0].type(compact.children[0].props).children[0]
+assert.equal(codexRing.props.role, 'button', 'Codex 圆环是可聚焦按钮')
+assert.equal(codexRing.props['aria-busy'], 'false')
+assert.match(codexRing.props['aria-label'], /refresh/i)
+codexRing.props.onClick()
+codexRing.props.onClick()
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(requests, 1, '连点只向授权状态端点发一个请求')
+assert.equal(ui.codexQuotaCache.windows.weekly.percent, 48, '授权状态已用百分比正确更新')
+const updated = footer(true).type(footer(true).props)
+assert.equal(updated.children[0].props.percent, 52, '点击后重新渲染剩余百分比')
+let prevented = false
+const updatedRing = updated.children[0].type(updated.children[0].props).children[0]
+updatedRing.props.onKeyDown({ key: 'Enter', preventDefault: () => { prevented = true } })
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(prevented, true)
+assert.equal(requests, 2, 'Enter 触发强制刷新且不吃缓存')
+updatedRing.props.onKeyDown({ key: ' ', preventDefault: () => {} })
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(requests, 3, '空格也触发强制刷新')
+responseOk = false
+updatedRing.props.onClick()
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(requests, 4, '登录失效时仍能发出一次强制刷新')
+assert.equal(ui.codexQuotaCache.status, 'unavailable')
+assert.equal(footer(false), null, '56px 窄栏不遮挡设置按钮')
+ui.codexQuotaCache.status = 'unavailable'
+const unavailable = footer(true).type(footer(true).props)
+assert.equal(unavailable.children[0].props.percent, null, '失效额度不继续显示缓存百分比')
 state.config = { ...config, sidebarSimple: false }
 const standard = footer(true)
 assert.match(standard.props.className, /compact/)
 assert.doesNotMatch(standard.props.className, /simple/)
-assert.equal(countCards(standard) + 1, countCards(simple), '简化模式保留预算与额度，并独立挂载峰谷条')
-console.log('[ok] #118 简化显示：选择/拒绝、保存失败重试、防重入、RPC 与重启持久化、引导串行、布局恢复及键盘滚动')
+console.log('[ok] #118 简化显示：选择/拒绝、保存失败重试、防重入、RPC 与重启持久化、紧凑双环及标准布局恢复')
 
 // 保存被拒绝或长期等待时，关闭提示不伪装成已保存设置。
 for (const failure of ['rejected', 'pending']) {

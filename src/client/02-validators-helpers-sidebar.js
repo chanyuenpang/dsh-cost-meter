@@ -3013,9 +3013,68 @@
           wide ? peakNoticeEl(state, config, t) : null))
     }
 
+    // Codex glyph: Lobe Icons (MIT), https://github.com/lobehub/lobe-icons ;
+    // the mark identifies the Codex product, not an OpenAI endorsement.
+    const CODEX_COMPACT_PATH = 'M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z'
+
+    function CompactRing(props) {
+      const value = Number.isFinite(props.percent) ? Math.max(0, Math.min(100, props.percent)) : null
+      const circumference = 2 * Math.PI * 10
+      const icon = props.kind === 'codex'
+        ? el('svg', { className: 'cm-compact-icon', viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true },
+          el('path', { fillRule: 'evenodd', clipRule: 'evenodd', d: CODEX_COMPACT_PATH }))
+        : el('img', { className: 'cm-compact-icon', src: '/favicon.svg', alt: '', 'aria-hidden': true })
+      return el(Tooltip, { label: props.detail, side: 'top', delayMs: 250 },
+        el('span', {
+          className: 'cm-compact-item' + (props.refresh ? ' clickable' + (props.refresh.busy ? ' busy' : '') : ''),
+          ...(props.refresh ? clickableRefreshProps(props.refresh.busy, props.refresh.run) : { tabIndex: 0, role: 'img' }),
+          'aria-label': props.detail,
+        },
+          el('span', { className: 'cm-compact-ring' },
+            el('svg', { viewBox: '0 0 28 28', 'aria-hidden': true },
+              el('circle', { className: 'cm-compact-track', cx: 14, cy: 14, r: 10 }),
+              el('circle', { className: 'cm-compact-progress ' + (props.phase || '') + (value === null ? ' unavailable' : ''), cx: 14, cy: 14, r: 10,
+                strokeDasharray: `${circumference * (value ?? 0) / 100} ${circumference}`, strokeDashoffset: 0 })),
+            icon)))
+    }
+
+    function CompactFooter(props) {
+      const { state, codex } = props
+      const config = state.config
+      const t = makeT(resolveLocale(config?.locale))
+      const [now, setNow] = useState(Date.now())
+      const codexRefresh = useClickRefresh(config.codexQuotaEnabled === true ? () => fetchCodexQuota(true, true) : null)
+      useEffect(() => {
+        const tick = () => { setNow(Date.now()); void fetchCodexQuota(false, config.codexQuotaEnabled === true) }
+        const timer = window.setInterval(tick, 30000)
+        const visible = () => { if (document.visibilityState === 'visible') tick() }
+        document.addEventListener('visibilitychange', visible)
+        return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', visible) }
+      }, [config.codexQuotaEnabled])
+      const weekly = codex.status === 'ok' && now - codex.fetchedAt < 10 * 60000 ? codex.windows.weekly : null
+      // Existing Codex snapshot stores used %, so invert exactly once for this remaining-only ring.
+      const remaining = Number.isFinite(weekly?.percent) ? 100 - weekly.percent : null
+      const codexDetail = [weekly && remaining !== null
+        ? `${t('codexQuotaTitle')} · ${Math.round(remaining * 10) / 10}% · ${weekly.resetsAt ? new Date(weekly.resetsAt).toLocaleString() : '—'}`
+        : `${t('codexQuotaTitle')} · —`,
+      ...(config.codexQuotaEnabled === true ? clickRefreshTipLines(t, codexRefresh) : [])].join(' · ')
+      const view = peakView(config, now)
+      // Keep the installed local peak strip's eight-hour remaining-time scale.
+      const phaseRemaining = view === null ? null : Math.max(0, Math.min(100, (view.nextAtMs - now) / (8 * 3600000) * 100))
+      const peakDetail = view === null ? `${t('peakShort')} / ${t('offPeakShort')} · —`
+        : `${t(phaseLabelKeys(view).notice)} · ${view.nextIntoPeak ? t('nextPeakIn', { time: countdownText(view, now, t) }) : t('nextOffPeakIn', { time: countdownText(view, now, t) })} · ${new Date(view.nextAtMs).toLocaleString()}`
+      const amount = formatMoneyUsd(displayCostOf(state.today, config), config)
+      return el('div', { className: 'cm-compact-footer' },
+        el(CompactRing, { kind: 'codex', percent: remaining, detail: codexDetail,
+          refresh: config.codexQuotaEnabled === true ? codexRefresh : null }),
+        el(CompactRing, { kind: 'dsh', percent: phaseRemaining, phase: view?.weekend ? 'weekend' : view?.inPeak ? 'peak' : '', detail: peakDetail }),
+        config.hideTodayCost === true ? null : el(Tooltip, { label: `${t('todayCostTitle')} · ${amount}`, side: 'top', delayMs: 250 },
+          el('span', { className: 'cm-compact-amount', tabIndex: 0, 'aria-label': `${t('todayCostTitle')} ${amount}` }, amount)))
+    }
+
     function SidebarFooter(props) {
       const costStore = props.useCost ? props.useCost(s => s) : undefined
-      useCodexQuota(costStore?.state?.config?.codexQuotaEnabled === true)
+      const codexSnapshot = useCodexQuota(costStore?.state?.config?.codexQuotaEnabled === true)
       // 侧边栏页脚非会话作用域插槽:useProjection 在部分宿主/页面可能不可用或
       // 抛错(无活跃会话),try/catch 退化,联动刷新随之失效(60s 轮询兜底)。
       let projectionUsage
@@ -3066,6 +3125,12 @@
       }, [wide, state])
       if (!state) return null
       const config = state.config
+      if (config.sidebarSimple === true) {
+        // The wide simplified view is a single compact status row beside Settings.
+        // Rail has only 56px: never crowd its settings control with three indicators.
+        return wide && config.sidebar !== false
+          ? el(CompactFooter, { state, codex: codexSnapshot }) : null
+      }
       const t = makeT(resolveLocale(config?.locale))
       const showBalance = (config.balance?.display === 'sidebar' || config.balance?.display === 'both')
         && config.hideOfficialBalance !== true

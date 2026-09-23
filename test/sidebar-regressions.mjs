@@ -33,15 +33,17 @@ for (const peakStyle of ['compact', 'classic']) for (const go of [false, true]) 
   const tree = render(ui.SidebarFooter({ wide, useCost: pick => pick({ state }) }))
   const peakClasses = ['cm-peak-strip', 'cm-peak-classic', 'cm-peak-rail', 'cm-peak-rail-classic']
   const strips = nodes(tree).filter(n => peakClasses.some(cls => hasClass(n, cls)))
-  const expected = peakEnabled && peakNotice && (!wide || budget || !hideTodayCost) ? 1 : 0
+  const expected = !sidebarSimple && peakEnabled && peakNotice && (!wide || budget || !hideTodayCost) ? 1 : 0
   assert.equal(strips.length, expected, JSON.stringify({ sidebarSimple, wide, budget, hideTodayCost, peakEnabled, peakNotice, peakStyle, go }))
   if (expected) assert.ok(hasClass(strips[0], wide ? peakStyle === 'classic' ? 'cm-peak-classic' : 'cm-peak-strip' : peakStyle === 'classic' ? 'cm-peak-rail-classic' : 'cm-peak-rail'))
-  const summaries = nodes(tree).filter(n => hasClass(n, 'cm-simple-summary'))
-  assert.equal(summaries.length, sidebarSimple && wide && !hideTodayCost ? 1 : 0)
-  if (sidebarSimple && wide && budget && !hideTodayCost) {
-    assert.match(text(summaries[0]), /今日 \/ 本月预算.*¥1 \/ ¥10/)
-    assert.ok(hasClass(summaries[0], 'warn'), '按本月已用 80% 预警，不能按今日 10% 降级')
-    assert.ok(nodes(tree).some(n => n.type === 'tooltip' && String(n.props.label).includes('80.0%')))
+  const compact = nodes(tree).filter(n => hasClass(n, 'cm-compact-footer'))
+  assert.equal(compact.length, sidebarSimple && wide ? 1 : 0, '简化模式只在宽栏占设置按钮右侧')
+  if (compact.length) {
+    assert.equal(nodes(compact[0]).filter(n => hasClass(n, 'cm-compact-ring')).length, 2)
+    assert.equal(nodes(compact[0]).filter(n => hasClass(n, 'cm-compact-amount')).length, hideTodayCost ? 0 : 1)
+    const rings = nodes(compact[0]).filter(n => hasClass(n, 'cm-compact-item'))
+    assert.equal(rings.every(n => n.props.tabIndex === 0 && n.props['aria-label']), true)
+    assert.equal(nodes(compact[0]).filter(n => hasClass(n, 'cm-compact-progress') && !hasClass(n, 'unavailable')).length, peakEnabled && peakNotice ? 1 : 0)
   }
   combinations++
 }
