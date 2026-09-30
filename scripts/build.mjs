@@ -66,8 +66,15 @@ writeFileSync(outPath, header + result.code)
 // 字节口径与 test/verify.mjs 的门禁一致(UTF-8 字节而非 UTF-16 字符数,中文文案算多字节)。
 const bytes = Buffer.byteLength(header + result.code, 'utf8')
 console.log(`src/client/*.js (${fragments.length} fragments) -> lib/client.js ${bytes} bytes`)
+// DSH STORE 上架审核对单文件设 262144 字节上限。个人用途的 fork(如 compact footer)可以有意超限:
+// 默认仍然严格失败,只有显式设置 DSH_COST_METER_ALLOW_OVERSIZE=1 才降级为警告。
+const allowOversize = process.env.DSH_COST_METER_ALLOW_OVERSIZE === '1'
 if (bytes > 262144) {
-  console.error(`✗ lib/client.js still exceeds 262144 bytes (${bytes})`)
-  process.exit(1)
+  if (!allowOversize) {
+    console.error(`✗ lib/client.js still exceeds 262144 bytes (${bytes})`)
+    process.exit(1)
+  }
+  console.warn(`⚠ lib/client.js ${bytes} bytes 超过 DSH STORE 上限 262144,已由 DSH_COST_METER_ALLOW_OVERSIZE=1 放行;此构建不可上架 DSH STORE`)
+} else {
+  console.log('✓ lib/client.js within DSH STORE per-file bound (262144)')
 }
-console.log('✓ lib/client.js within DSH STORE per-file bound (262144)')

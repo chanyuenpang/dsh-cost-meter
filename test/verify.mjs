@@ -123,11 +123,18 @@ for (const browserBundle of ['../lib/client.js']) {
   new vm.Script(src, { filename: browserBundle })
 }
 console.log('[ok] 浏览器端 bundle 语法门禁(client.js vm 编译)通过')
-// DSH STORE runtime byte bound: lib/client.js (bounded artifact) must stay < 262144
+// DSH STORE runtime byte bound: lib/client.js (bounded artifact) must stay < 262144.
+// 个人用途的 fork(如 compact footer)可以有意超限:默认仍严格要求,只有显式设置
+// DSH_COST_METER_ALLOW_OVERSIZE=1 才降级为警告——否则这一条断言会挡住后面全部用例。
 {
   const st = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
-  assert.ok(Buffer.byteLength(st, 'utf8') < 262144, 'lib/client.js < 262144 bytes (DSH STORE per-file bound, src -> lib via esbuild)')
-  console.log('[ok] lib/client.js runtime byte bound (<262144) 通过 (' + Buffer.byteLength(st, 'utf8') + ' bytes)')
+  const bytes = Buffer.byteLength(st, 'utf8')
+  if (process.env.DSH_COST_METER_ALLOW_OVERSIZE === '1' && bytes >= 262144) {
+    console.warn('[warn] lib/client.js ' + bytes + ' bytes 超过 DSH STORE 上限 262144,已由 DSH_COST_METER_ALLOW_OVERSIZE=1 放行(不可上架 DSH STORE)')
+  } else {
+    assert.ok(bytes < 262144, 'lib/client.js < 262144 bytes (DSH STORE per-file bound, src -> lib via esbuild)')
+    console.log('[ok] lib/client.js runtime byte bound (<262144) 通过 (' + bytes + ' bytes)')
+  }
 }
 
 // DSH STORE 源码侧逐文件上限(v1.7.12,issue #239):固定 Commit 自动审核对仓库内每个
