@@ -181,6 +181,33 @@ for (const locale of ['zh', 'en']) {
   assert.equal(roundTrip(compact.config).sidebarStyle, 'compact', '紧凑布局配置可往返')
   assert.ok(applyConfigPatch(compact.config, { sidebarStyle: 'invalid' }).errors.length > 0)
   assert.equal(ui.codingPlanWindowLabel('daily', t), t('goShortDaily'), 'daily 窗口双语标签')
+
+  // #157: selecting the official CNY source preserves the display rate and history;
+  // the hint remains until an actual CNY table has been synced.
+  timers.clear()
+  const patches = []
+  current = { ...current, config: roundTrip({ locale, currency: 'CNY', pricingCurrency: 'USD', exchangeRate: 7.2 }) }
+  const currencyApi = { updateConfig: async patch => {
+    patches.push(patch)
+    current = { ...current, config: roundTrip(applyConfigPatch(current.config, patch).config) }
+  } }
+  section = renderer(ui.CostSection, () => ({ useCost: () => ({ state: current, status: 'ready' }), api: currencyApi }))
+  tree = openPrices()
+  assert.ok(textOf(tree).includes(t('pricingCnyHint', { rate: 7.2 })))
+  button(tree, t('pricingCurrencyCny')).props.onClick()
+  section()
+  for (const fn of [...timers.values()]) fn()
+  timers.clear()
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(patches.length, 1)
+  assert.equal(JSON.stringify(patches[0]), JSON.stringify({ pricingCurrency: 'CNY' }))
+  assert.equal(current.config.exchangeRate, 7.2)
+  assert.ok(textOf(section()).includes(t('pricingCnyHint', { rate: 7.2 })))
+  for (const patch of [{ prices: { ...current.config.prices, currency: 'CNY' } }, { currency: 'USD' }]) {
+    current = { ...current, config: roundTrip({ ...current.config, ...patch }) }
+    assert.ok(!textOf(section()).includes(t('pricingCnyHint', { rate: 7.2 })))
+  }
+  timers.clear()
 }
 assert.ok(applyConfigPatch(sanitizeConfig({}), { priceMatchDismissed: [null] }).errors.length > 0)
 assert.deepEqual(sanitizeConfig({ priceMatchDismissed: ['a:b', 'a:b', '', null] }).priceMatchDismissed, ['a:b'])

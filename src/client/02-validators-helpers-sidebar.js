@@ -17,10 +17,15 @@
       return v
     }
     const oneOf = (v, list, fallback) => (typeof v === 'string' && list.includes(v) ? v : fallback)
+    function parseBillingClasses(v, model = false) {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) return {}
+      return Object.fromEntries(Object.entries(v).filter(([key, value]) => model ? key.length > 0 && ['plan', 'api'].includes(value) : ['auto', 'plan', 'api'].includes(value)))
+    }
     function needBool(v, path) {
       if (typeof v !== 'boolean') fail(path, 'boolean')
       return v
     }
+    const mapFields = (value, keys, parse) => Object.fromEntries(keys.map(key => [key, parse(value[key])]))
     function aggregateModelMap(v, path) {
       // 宽容解析模型聚合 map(旧账本条目可能缺字段/带 null/非对象):数值归一为有限非负数。
       const out = {}
@@ -30,9 +35,7 @@
           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
           const num = x => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0)
           out[key] = {
-            input: num(raw.input), output: num(raw.output),
-            cacheRead: num(raw.cacheRead), cacheWrite: num(raw.cacheWrite),
-            reasoning: num(raw.reasoning), cost: num(raw.cost),
+            ...mapFields(raw, ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'cost'], num),
             // API 渠道金额(issue #64):缺席 = 旧数据按 cost 全额 API 口径。
             apiCost: raw.apiCost === undefined ? num(raw.cost) : num(raw.apiCost),
           }
@@ -40,38 +43,29 @@
       }
       return out
     }
-    function parseSession(v, path) {
+    function parseUsageFields(v, path) {
       needObject(v, path)
-      return {
-        id: needStr(v.id, path + '.id'),
-        provider: typeof v.provider === 'string' ? v.provider : '',
-        model: typeof v.model === 'string' ? v.model : '',
-        input: needNum(v.input, path + '.input'),
-        output: needNum(v.output, path + '.output'),
-        cacheRead: needNum(v.cacheRead, path + '.cacheRead'),
-        cacheWrite: needNum(v.cacheWrite, path + '.cacheWrite'),
+      const out = {
         reasoning: v.reasoning === undefined ? 0 : needNum(v.reasoning, path + '.reasoning'),
-        calls: needNum(v.calls, path + '.calls'),
-        cost: needNum(v.cost, path + '.cost'),
         apiCost: v.apiCost === undefined ? undefined : needNum(v.apiCost, path + '.apiCost'),
         byModel: aggregateModelMap(v.byModel, path + '.byModel'),
         byProviderModel: aggregateModelMap(v.byProviderModel, path + '.byProviderModel'),
       }
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'calls', 'cost']) out[key] = needNum(v[key], path + '.' + key)
+      return out
+    }
+    function parseSession(v, path) {
+      return {
+        ...parseUsageFields(v, path),
+        id: needStr(v.id, path + '.id'),
+        provider: typeof v.provider === 'string' ? v.provider : '',
+        model: typeof v.model === 'string' ? v.model : '',
+      }
     }
     function parseDay(v, path) {
-      needObject(v, path)
       const out = {
+        ...parseUsageFields(v, path),
         date: needStr(v.date, path + '.date'),
-        input: needNum(v.input, path + '.input'),
-        output: needNum(v.output, path + '.output'),
-        cacheRead: needNum(v.cacheRead, path + '.cacheRead'),
-        cacheWrite: needNum(v.cacheWrite, path + '.cacheWrite'),
-        reasoning: v.reasoning === undefined ? 0 : needNum(v.reasoning, path + '.reasoning'),
-        calls: needNum(v.calls, path + '.calls'),
-        cost: needNum(v.cost, path + '.cost'),
-        apiCost: v.apiCost === undefined ? undefined : needNum(v.apiCost, path + '.apiCost'),
-        byModel: aggregateModelMap(v.byModel, path + '.byModel'),
-        byProviderModel: aggregateModelMap(v.byProviderModel, path + '.byProviderModel'),
         sessions: [],
       }
       if (v.sessions !== undefined) {
@@ -80,21 +74,20 @@
       }
       return out
     }
+    function parsePriceTier(v, path, optional = ['cacheWrite', 'reasoning']) {
+      const out = {}
+      for (const key of ['cacheHit', 'cacheMiss', 'output']) out[key] = needNum(v[key], path + '.' + key)
+      for (const key of optional) if (v[key] !== undefined) out[key] = needNum(v[key], path + '.' + key)
+      return out
+    }
     function parsePrice(v, path) {
       needObject(v, path)
-      const out = {
-        cacheHit: needNum(v.cacheHit, path + '.cacheHit'),
-        cacheMiss: needNum(v.cacheMiss, path + '.cacheMiss'),
-        output: needNum(v.output, path + '.output'),
-      }
-      for (const key of ['cacheWrite', 'reasoning']) if (v[key] !== undefined) out[key] = needNum(v[key], path + '.' + key)
+      const out = parsePriceTier(v, path)
       for (const key of ['offPeak', 'peak', 'legacyBase', 'longContext']) {
         if (v[key] === undefined) continue
-        const tier = v[key], part = {}
-        for (const field of ['cacheHit', 'cacheMiss', 'output']) part[field] = needNum(tier[field], path + '.' + key + '.' + field)
-        for (const field of ['cacheWrite', 'reasoning', 'aboveInputTokens']) if (tier[field] !== undefined) part[field] = needNum(tier[field], path + '.' + key + '.' + field)
-        out[key] = part
+        out[key] = parsePriceTier(v[key], path + '.' + key, ['cacheWrite', 'reasoning', 'aboveInputTokens'])
       }
+      if (v.cny !== undefined) out.cny = parsePriceTier(v.cny, path + '.cny')
       if (v.legacy !== undefined) out.legacy = needBool(v.legacy, path + '.legacy')
       if (v.rateHistory !== undefined) {
         if (!Array.isArray(v.rateHistory) || v.rateHistory.length > 16) fail(path + '.rateHistory', 'price history')
@@ -114,6 +107,7 @@
       labelEn: typeof e.labelEn === 'string' ? e.labelEn : '',
       display: oneOf(e.display, ['sidebar', 'settings', 'off'], 'both'),
       unit: ['CNY', 'EUR', 'CREDITS'].includes(e.unit) ? e.unit : 'USD',
+      convertToDisplayCurrency: e.convertToDisplayCurrency === true,
       refreshMinutes: typeof e.refreshMinutes === 'number' && Number.isFinite(e.refreshMinutes) ? e.refreshMinutes : 15,
       request: e.request && typeof e.request === 'object' ? e.request : { url: '' },
       extract: e.extract && typeof e.extract === 'object' ? e.extract : {},
@@ -133,6 +127,7 @@
         showSessionId: v.showSessionId === true,
         hideOfficialBalance: v.hideOfficialBalance === true,
         hideTodayCost: v.hideTodayCost === true,
+        sidebarTodayMetric: v.sidebarTodayMetric === 'tokens' ? 'tokens' : 'cost',
         showTotalWithPlan: v.showTotalWithPlan === true,
         sidebarSimple: v.sidebarSimple === true,
         sidebarSimplePromptSeen: v.sidebarSimplePromptSeen === true,
@@ -152,6 +147,7 @@
         peakWindows: Array.isArray(v.peakWindows)
           ? v.peakWindows.map((w, i) => ({ start: needNum(w.start, path + '.peakWindows[' + i + '].start'), end: needNum(w.end, path + '.peakWindows[' + i + '].end') }))
           : [],
+        peakHolidays: Array.isArray(v.peakHolidays) ? v.peakHolidays.filter(date => typeof date === 'string') : [],
         peakNotice: v.peakNotice !== false,
         peakAlertEnabled: v.peakAlertEnabled !== false,
         peakAlertAhead: Number.isFinite(v.peakAlertAhead) && v.peakAlertAhead >= 1 && v.peakAlertAhead <= 30 ? v.peakAlertAhead : 2,
@@ -187,7 +183,7 @@
                 refreshMinutes: typeof e.refreshMinutes === 'number' && Number.isFinite(e.refreshMinutes) ? e.refreshMinutes : 15,
                 apiKey: typeof e.apiKey === 'string' ? e.apiKey : '',
                 ...(id === 'minimax' ? { baseUrl: typeof e.baseUrl === 'string' ? e.baseUrl : '' } : {}),
-                ...(id === 'qwen' ? { quotaSource: e.quotaSource === 'cli' ? 'cli' : 'local' } : {}),
+                ...(id === 'qwen' ? { quotaSource: ['cli', 'bailian'].includes(e.quotaSource) ? e.quotaSource : 'local' } : {}),
                 // SCNet / 千问本地计量字段(issue #26/#78):其余厂商无此键,缺省剔除。
                 ...(typeof e.planCredits === 'number' && Number.isFinite(e.planCredits) && e.planCredits > 0 ? { planCredits: e.planCredits } : {}),
                 ...(typeof e.planStart === 'string' ? { planStart: e.planStart } : {}),
@@ -291,24 +287,8 @@
         })(),
         // Plan/API 双轨计费分类(issue #64):读侧白名单,非法值回落默认。
         planBilling: {
-          providers: (() => {
-            const out = {}
-            if (v.planBilling?.providers !== null && typeof v.planBilling?.providers === 'object' && !Array.isArray(v.planBilling.providers)) {
-              for (const [k, val] of Object.entries(v.planBilling.providers)) {
-                if (typeof k === 'string' && (val === 'auto' || val === 'plan' || val === 'api')) out[k] = val
-              }
-            }
-            return out
-          })(),
-          models: (() => {
-            const out = {}
-            if (v.planBilling?.models !== null && typeof v.planBilling?.models === 'object' && !Array.isArray(v.planBilling.models)) {
-              for (const [k, val] of Object.entries(v.planBilling.models)) {
-                if (typeof k === 'string' && k.length > 0 && (val === 'plan' || val === 'api')) out[k] = val
-              }
-            }
-            return out
-          })(),
+          providers: parseBillingClasses(v.planBilling?.providers),
+          models: parseBillingClasses(v.planBilling?.models, true),
         },
       }
     }
@@ -317,12 +297,19 @@
     const EMPTY_BAL = { status: 'off', message: '', fetchedAt: 0, currency: '', totalBalance: 0, grantedBalance: 0, toppedUpBalance: 0 }
     const EMPTY_GO = { status: 'off', message: '', fetchedAt: 0, rolling: null, weekly: null, monthly: null }
     const emptyCustomSnapshot = (index = null) => ({ status: 'off', message: '', fetchedAt: 0, label: '', unit: 'USD', remaining: 0, maxBudget: null, spend: null, index })
-    function parseBalance(v, path) {
+    function parseSnapshotStatus(v, path) {
       needObject(v, path)
       return {
         status: v.status === 'ok' || v.status === 'error' ? v.status : 'off',
         message: typeof v.message === 'string' ? v.message : '',
         fetchedAt: typeof v.fetchedAt === 'number' ? v.fetchedAt : 0,
+      }
+    }
+    function parseBalance(v, path) {
+      return {
+        ...parseSnapshotStatus(v, path),
+        keyConfigured: v.keyConfigured === true,
+        keySource: typeof v.keySource === 'string' ? v.keySource : '',
         currency: typeof v.currency === 'string' ? v.currency : '',
         totalBalance: num0(v.totalBalance),
         grantedBalance: num0(v.grantedBalance),
@@ -338,22 +325,16 @@
       }
     }
     function parseGoQuota(v, path) {
-      needObject(v, path)
       return {
-        status: v.status === 'ok' || v.status === 'error' ? v.status : 'off',
-        message: typeof v.message === 'string' ? v.message : '',
-        fetchedAt: typeof v.fetchedAt === 'number' ? v.fetchedAt : 0,
-        rolling: v.rolling === undefined || v.rolling === null ? null : parseGoWindow(v.rolling, path + '.rolling'),
-        weekly: v.weekly === undefined || v.weekly === null ? null : parseGoWindow(v.weekly, path + '.weekly'),
-        monthly: v.monthly === undefined || v.monthly === null ? null : parseGoWindow(v.monthly, path + '.monthly'),
+        ...parseSnapshotStatus(v, path),
+        rolling: parseGoWindow(v.rolling, path + '.rolling'),
+        weekly: parseGoWindow(v.weekly, path + '.weekly'),
+        monthly: parseGoWindow(v.monthly, path + '.monthly'),
       }
     }
     function parseCustomBalance(v, path) {
-      needObject(v, path)
       return {
-        status: v.status === 'ok' || v.status === 'error' ? v.status : 'off',
-        message: typeof v.message === 'string' ? v.message : '',
-        fetchedAt: typeof v.fetchedAt === 'number' ? v.fetchedAt : 0,
+        ...parseSnapshotStatus(v, path),
         label: typeof v.label === 'string' ? v.label : '',
         unit: typeof v.unit === 'string' ? v.unit : 'USD',
         remaining: num0(v.remaining),
@@ -390,29 +371,19 @@
             for (const [wk, w] of Object.entries(raw.windows)) {
               if (w === null || typeof w !== 'object' || Array.isArray(w)) continue
               windows[wk] = {
-                percent: num0(w.percent),
+                ...mapFields(w, ['percent', 'localTokens', 'localCost', 'sampleCount'], num0),
+                ...mapFields(w, ['sampleAt', 'per1Tokens', 'per1Cost', 'fullTokens', 'fullCost'], numOrNull),
                 resetsAt: typeof w.resetsAt === 'string' ? w.resetsAt : '',
-                localTokens: num0(w.localTokens),
-                localCost: num0(w.localCost),
                 method: w.method === 'sample' || w.method === 'live' ? w.method : 'none',
-                sampleAt: numOrNull(w.sampleAt),
                 confidence: w.confidence === 'high' || w.confidence === 'low' ? w.confidence : null,
-                per1Tokens: numOrNull(w.per1Tokens),
-                per1Cost: numOrNull(w.per1Cost),
-                fullTokens: numOrNull(w.fullTokens),
-                fullCost: numOrNull(w.fullCost),
-                sampleCount: num0(w.sampleCount),
               }
             }
           }
           if (raw.intervals !== null && typeof raw.intervals === 'object' && !Array.isArray(raw.intervals)) {
             for (const [wk, list] of Object.entries(raw.intervals)) {
               if (!Array.isArray(list)) continue
-              intervals[wk] = list.filter(x => x !== null && typeof x === 'object' && !Array.isArray(x)).map(x => ({
-                t0: num0(x.t0), t1: num0(x.t1),
-                tokens: num0(x.tokens), cost: num0(x.cost), pct: num0(x.pct),
-                per1Tokens: num0(x.per1Tokens), per1Cost: num0(x.per1Cost),
-              }))
+              intervals[wk] = list.filter(x => x !== null && typeof x === 'object' && !Array.isArray(x))
+                .map(x => mapFields(x, ['t0', 't1', 'tokens', 'cost', 'pct', 'per1Tokens', 'per1Cost'], num0))
             }
           }
           providers[id] = { windows, intervals }
@@ -448,6 +419,12 @@
         // Token Plan 统计(issue #64):宽容解析,缺失/畸形回落 null(UI 隐藏面板)。
         planStats: parsePlanStats(v.planStats),
         history: Array.isArray(v.history) ? v.history.map((d, i) => parseDay(d, path + '.history[' + i + ']')) : [],
+        externalUsage: v.externalUsage && Array.isArray(v.externalUsage.sources) ? {
+          fetchedAt: Number(v.externalUsage.fetchedAt) || 0,
+          stale: v.externalUsage.stale === true,
+          sources: v.externalUsage.sources.map(s => ({ source: String(s.source), today: parseDay(s.today, path + '.external.today'), month: parseDay(s.month, path + '.external.month'), total: parseDay(s.total, path + '.external.total'), history: (s.history ?? []).map(d => parseDay(d, path + '.external.history')) })),
+          combined: Object.fromEntries(['today', 'month', 'total', 'history'].map(k => [k, k === 'history' ? (v.externalUsage.combined.history ?? []).map(d => parseDay(d, path + '.external.history')) : parseDay(v.externalUsage.combined[k], path + '.external.' + k)])),
+        } : null,
         config: parseConfig(v.config, path + '.config'),
         reconcile: v.reconcile === null || v.reconcile === undefined ? undefined : { ok: v.reconcile.ok === true, message: typeof v.reconcile.message === 'string' ? v.reconcile.message : '' },
         // 扩展价格表目录(宿主只读下发;缺失时 UI 自动隐藏目录面板)。
@@ -474,10 +451,7 @@
       return { parse }
     }
     const stateCodec = codecOf(parseState)
-    const patchCodec = codecOf(v => {
-      if (v === null || typeof v !== 'object' || Array.isArray(v)) fail('patch', 'object')
-      return v
-    })
+    const patchCodec = codecOf(v => needObject(v, 'patch'))
     const fetchCodec = codecOf(parseFetchResult)
     const providerCodec = codecOf(v => {
       return needStr(v, 'provider')
@@ -491,10 +465,7 @@
     const dateCodec = codecOf(v => {
       return needStr(v, 'date')
     })
-    const dayCodec = codecOf(v => {
-      if (v === null || typeof v !== 'object' || Array.isArray(v)) fail('day', 'object')
-      return v
-    })
+    const dayCodec = codecOf(v => needObject(v, 'day'))
     const limitCodec = codecOf(v => {
       if (!Number.isFinite(Number(v))) fail('limit', 'number')
       return Number(v)
@@ -502,10 +473,7 @@
     const sortCodec = codecOf(v => {
       return needStr(v, 'sort')
     })
-    const topSessionsCodec = codecOf(v => {
-      if (v === null || typeof v !== 'object' || Array.isArray(v)) fail('topSessions', 'object')
-      return v
-    })
+    const topSessionsCodec = codecOf(v => needObject(v, 'topSessions'))
     // 密钥目标与明文(v1.6.8):target 为受限枚举,明文仅单向上行,永不回传。
     const credTargetCodec = codecOf(v => {
       return needStr(v, 'target')
@@ -669,9 +637,16 @@
       const start = Math.max(satDay * 86400000 - 8 * 3600000, WEEKEND_OFFPEAK_EFFECTIVE_MS)
       return { start, end: (satDay + 2) * 86400000 - 8 * 3600000 }
     }
-    function isPeakHour(atMs, effectiveAtMs, windows) {
+    function holidayZoneAt(atMs, holidays) {
+      if (!Number.isFinite(atMs) || atMs < WEEKEND_OFFPEAK_EFFECTIVE_MS || !Array.isArray(holidays)) return null
+      const day = Math.floor((atMs + 8 * 3600000) / 86400000)
+      if (!holidays.includes(new Date(day * 86400000).toISOString().slice(0, 10))) return null
+      return { start: day * 86400000 - 8 * 3600000, end: (day + 1) * 86400000 - 8 * 3600000 }
+    }
+    const offPeakZoneAt = (atMs, holidays) => holidayZoneAt(atMs, holidays) ?? weekendZoneAt(atMs)
+    function isPeakHour(atMs, effectiveAtMs, windows, holidays) {
       if (!Array.isArray(windows) || windows.length === 0) return false
-      if (weekendZoneAt(atMs) !== null) return false
+      if (offPeakZoneAt(atMs, holidays) !== null) return false
       if (Number.isFinite(effectiveAtMs) && atMs < effectiveAtMs) return false
       const hour = new Date(atMs).getUTCHours()
       return windows.some(w => {
@@ -696,7 +671,7 @@
       if (peak?.enabled !== true) return asTier(base)
       // 非有限(如 Date.parse('') 的 NaN)视同「未知生效时刻」,与服务端 tierFor 同口径。
       const effectiveAtMs = typeof peak.effectiveAtMs === 'number' && Number.isFinite(peak.effectiveAtMs) ? peak.effectiveAtMs : undefined
-      if (isPeakHour(atMs, effectiveAtMs, peak.windows)) {
+      if (isPeakHour(atMs, effectiveAtMs, peak.windows, peak.holidays)) {
         const p = base.peak
         return p === undefined ? asTier(base) : asTier(p)
       }
@@ -745,6 +720,7 @@
       return { width: value, label: value }
     }
     /** 已换算币种金额 → 显示字符串(符号 + 可调小数位)。 */
+    const fixedAmount = (value, decimals) => value.toFixed(decimals).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
     function formatMoneyValue(value, config) {
       const symbol = typeof config?.symbol === 'string' && config.symbol.length > 0 ? config.symbol : '$'
       // 合法配置的 decimals:0 须保留(`Number(x) || 2` 会把 0 误抬成 2,
@@ -753,9 +729,7 @@
       const decimals = Math.max(0, Math.min(10, Number.isFinite(req) ? Math.floor(req) : 2))
       let effective = decimals
       if (value > 0 && value < Math.pow(10, -decimals)) effective = decimals + 2
-      const fixed = value.toFixed(effective)
-      const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed
-      return symbol + trimmed
+      return symbol + fixedAmount(value, effective)
     }
     function formatMoneyUsd(usd, config) {
       const rate = Number(config?.exchangeRate)
@@ -783,7 +757,7 @@
     }
     /**
      * 模型名自动匹配(与 lib/pricing.js 的 matchModelId 同逻辑;bundle 无法导入,修改时两处同步)。
-     * 精确 → 归一化等价 → 宽泛包含(取最长候选) → 去后缀 → 前缀 → 家族 token 相似。
+     * 精确 → 归一化等价 → 去日期/版本后缀 → 安全后缀。
      */
     function matchModelIdLocal(modelId, candidates) {
       if (typeof modelId !== 'string' || modelId.length === 0) return null
@@ -796,54 +770,12 @@
       if (canon.length === 0) return null
       const byCanon = list.find(c => canonModelIdLocal(c) === canon)
       if (byCanon !== undefined) return byCanon
-      let containHit = null
-      let containLen = 0
-      for (const c of list) {
-        const cc = canonModelIdLocal(c)
-        if (cc.length < 4 || cc === canon) continue
-        if (canon.includes(cc) && cc.length > containLen) {
-          // 数字分叉守卫(issue #18 同源,与 pricing.js 同步):候选是请求 canon
-          // 的真前缀且剩余段为 1-2 位纯数字(glm-5 vs glm-5.3)时视为版本分叉
-          // 拒绝;日期快照(≥3 位)与 '-128k' 容量后缀余量不受影响。
-          const idx = canon.indexOf(cc)
-          if (/^\d{1,2}$/.test(canon.slice(idx + cc.length))) continue
-          containHit = c; containLen = cc.length
-        }
-      }
-      if (containHit !== null) return containHit
       const stripped = strip(modelId)
       const byStripped = list.find(c => strip(c) === stripped)
       if (byStripped !== undefined) return byStripped
-      let prefixHit = null
-      for (const c of list) {
-        const cs = strip(c)
-        if (cs.length === 0 || cs === stripped) continue
-        const rest = stripped.slice(cs.length)
-        if (stripped.startsWith(cs) && /^[-_./:]/.test(rest)) {
-          if (/^\d{1,2}$/.test(rest.replace(/^[-_./:]+/, ''))) continue // 版本分叉(gpt-5.9 的 '.9'),与 pricing.js 同步
-          if (prefixHit === null || strip(prefixHit).length < cs.length) prefixHit = c
-        }
-      }
-      if (prefixHit !== null) return prefixHit
-      const tokensOf = id => strip(id).split(/[-_./:]+/).filter(Boolean)
-      const mt = tokensOf(modelId)
-      if (mt.length < 2) return null
-      let best = null
-      let bestLen = 0
-      for (const c of list) {
-        const ct = tokensOf(c)
-        let n = 0
-        while (n < mt.length && n < ct.length && mt[n] === ct[n]) n += 1
-        // 防跨版本误配(issue #18,与 pricing.js 同步):分歧位置两侧都是数字/版本号 token 时拒绝匹配。
-        if (n < mt.length && n < ct.length && /^\d+$/.test(mt[n]) && /^\d+$/.test(ct[n])) continue
-        // 候选耗尽而请求多出全为 1-2 位纯数字 token(glm-5 vs glm-5.3)同为版本分叉,拒绝。
-        if (n >= 2 && n === ct.length && n < mt.length && mt.slice(n).every(t => /^\d{1,2}$/.test(t))) continue
-        // 分歧位一侧为 1-2 位版本号、另一侧为变体名(gpt-5.9 vs gpt-5-nano),与 pricing.js 同步拒绝。
-        if (n >= 2 && n < mt.length && n < ct.length
-          && ((/^\d{1,2}$/.test(mt[n]) && /^[a-z]/.test(ct[n])) || (/^\d{1,2}$/.test(ct[n]) && /^[a-z]/.test(mt[n])))) continue
-        if (n >= 2 && (n > bestLen || (n === bestLen && best !== null && c.length < best.length))) { best = c; bestLen = n }
-      }
-      return best
+      const suffix = /^(?:[-_./:@](?:\d{4}-?\d{2}-?\d{2}|v\d+(?:\.\d+)*|\d+k|latest))+$/
+      return list.filter(c => stripped.startsWith(strip(c)) && suffix.test(stripped.slice(strip(c).length)))
+        .sort((a, b) => b.length - a.length)[0] ?? null
     }
     /**
      * 客户端价格解析(与 pricing.js providerPriceEntryFor 同口径):手动覆盖 → 精确 → 自动匹配。
@@ -869,7 +801,7 @@
       const model = typeof modelId === 'string' ? modelId.toLowerCase() : ''
       return LOCAL_MODEL_PREFIXES.some(prefix => model.startsWith(prefix))
     }
-    function resolveClientPrice(providerRaw, modelId, config) {
+    function resolveClientPriceRaw(providerRaw, modelId, config) {
       const prices = config?.prices ?? {}
       const mode = config?.priceMatch === 'exact' ? 'exact' : 'auto'
       const overrides = config?.priceOverrides && typeof config.priceOverrides === 'object' ? config.priceOverrides : {}
@@ -930,6 +862,7 @@
       const hit = catalog[targetModel] !== undefined ? targetModel
         : (mode === 'auto' ? matchModelIdLocal(targetModel, Object.keys(catalog)) : null)
       if (hit !== null) return { entry: catalog[hit], priced: catalog[hit]?.unpriced !== true, billingMode: 'flat', matched: true }
+      if (targetProvider === 'opencode-go') return { entry: null, priced: false, billingMode: 'flat', matched: false }
       // 跨厂商兑底(与 pricing.js 同口径):provider 未在价格表登记时按模型名全库查找。
       if (mode === 'auto') {
         const dsModels = prices.models ?? {}
@@ -964,6 +897,13 @@
         if (retryHit !== null) return { entry: dsModels[retryHit], priced: true, billingMode: 'deepseek-peak', matched: true }
       }
       return { entry: null, priced: false, billingMode: 'flat', matched: false }
+    }
+    function resolveClientPrice(provider, modelId, config) {
+      const result = resolveClientPriceRaw(provider, modelId, config)
+      if (result.priced && config?.prices?.currency === 'CNY' && result.entry?.cny) {
+        return { ...result, entry: result.entry.cny, currency: 'CNY' }
+      }
+      return { ...result, currency: result.billingMode === 'deepseek-peak' && config?.prices?.currency === 'CNY' ? 'CNY' : 'USD' }
     }
     /** 投影 token 桶 → 按当前时刻档位计价的美元成本。 */
     /**
@@ -1012,8 +952,9 @@
       go: ['go', 'zen', 'opencode', 'opencode-go'],
       qwen: ['qwen', 'qwen-tokenplan', 'qianwen-tokenplan', 'qwen-token-plan', 'qianwen-token-plan'],
       scnet: ['scnet', 'scnet-tokenplan', 'scnet-token-plan'],
+      mimo: ['mimo', 'xiaomimimo', 'mimo-token-plan', 'xiaomi-token-plan', 'xiaomi-token-plan-cn', 'xiaomi-token-plan-sgp', 'xiaomi-token-plan-ams'],
     }
-    const PLAN_PROVIDER_IDS_LOCAL = ['anthropic', 'zai', 'minimax', 'kimi', 'openrouter', 'siliconflow', 'commandcode', 'scnet', 'volcengine', 'qwen', 'go']
+    const PLAN_PROVIDER_IDS_LOCAL = ['anthropic', 'zai', 'minimax', 'kimi', 'openrouter', 'siliconflow', 'commandcode', 'scnet', 'volcengine', 'qwen', 'mimo', 'go']
     function planProviderIdOfLocal(provider) {
       const name = String(provider ?? '').trim().toLowerCase().replace(/^llm-/, '')
       if (name.length === 0) return null
@@ -1055,14 +996,16 @@
     function billingClassOfLocal(provider, modelId, config) {
       let planId = planProviderIdOfLocal(provider)
       if (planId === null && isRoutedThirdPartyCallLocal(provider, modelId, config)) planId = 'go'
-      if (planId === null) return 'api'
       const models = config?.planBilling?.models
       if (models !== null && typeof models === 'object') {
         const direct = models[provider + ':' + modelId]
         if (direct === 'plan' || direct === 'api') return direct
-        const canonical = models[planId + ':' + modelId]
-        if (canonical === 'plan' || canonical === 'api') return canonical
+        if (planId !== null) {
+          const canonical = models[planId + ':' + modelId]
+          if (canonical === 'plan' || canonical === 'api') return canonical
+        }
       }
+      if (planId === null) return 'api'
       const configured = config?.planBilling?.providers?.[planId]
       if (configured === 'plan' || configured === 'api') return configured
       return enabledPlanSetOfLocal(config).has(planId) ? 'plan' : 'api'
@@ -1077,6 +1020,7 @@
         enabled: config.peakEnabled === true,
         effectiveAtMs: Date.parse(config.peakEffectiveAt || ''),
         windows: config.peakWindows,
+        holidays: config.peakHolidays,
       }
       const now = Date.now()
       const byModel = usage.byProviderModel ?? usage.byModel ?? {}
@@ -1089,7 +1033,7 @@
         const resolved = resolveClientPrice(provider, modelId, config)
         if (resolved.priced) {
           const c = costOfBuckets(byModel[providerKey], tierFor(normalizeClientPrice(resolved.entry), now, { ...peak, enabled: resolved.billingMode === 'deepseek-peak' && peak.enabled }))
-          const billed = usdFromCostLocal(c, resolved.billingMode === 'deepseek-peak' && config.prices?.currency === 'CNY' ? 'CNY' : 'USD', config.exchangeRate)
+          const billed = usdFromCostLocal(c, resolved.currency, config.exchangeRate)
           total += billed
           if (billingClassOfLocal(provider, modelId, config) === 'api') api += billed
         }
@@ -1356,14 +1300,11 @@
         const timer = config?.includeSubagentCost === true ? setInterval(refresh, 10000) : null
         return () => { active = false; if (timer !== null) clearInterval(timer) }
       }, [props.sessionId, state?.meta?.now, projection, config?.includeSubagentCost])
-      const saved = snapshot?.id === props.sessionId && snapshot.include === (config?.includeSubagentCost === true) ? snapshot.value : null
+      const saved = snapshot && snapshot.id === props.sessionId && snapshot.include === (config?.includeSubagentCost === true) ? snapshot.value : null
       return { usage: mergeSessionUsage(projection, saved, config?.includeSubagentCost === true, config), config }
     }
 
-    function SessionCost(props) {
-      const { usage, config } = useSessionUsage(props)
-      if (!usage || !config || (billedInput(usage) + (usage?.output ?? 0)) === 0) return null
-      const t = makeT(resolveLocale(config.locale))
+    function sessionCostParts(usage, config) {
       // Plan/API 双轨(issue #64):会话内存在 Plan 类模型时,徽章显示真金白银
       // (API)金额并在悬停明细中单列 Plan 等值;「含 Plan 总额」开启时回到
       // 单一总额口径(v1.6.0);无 Plan 用量时保持宿主精确成本快路径。
@@ -1374,7 +1315,19 @@
         planPart = Math.max(0, split.total - split.api)
         if (planPart > 0) cost = split.api
       }
-      const input = billedInput(usage)
+      return { cost, planPart }
+    }
+
+    function modelCostDetail(usage, config) {
+      return Object.entries(usage?.byProviderModel ?? {}).filter(([, row]) => row.input || row.output || row.cacheRead || row.cacheWrite || row.reasoning)
+        .map(([id, row]) => id + ' ' + formatMoneyUsd(row.cost, config)).join('; ')
+    }
+
+    function SessionCost(props) {
+      const { usage, config } = useSessionUsage(props)
+      if (!usage || !config || (billedInput(usage) + (usage?.output ?? 0)) === 0) return null
+      const t = makeT(resolveLocale(config.locale))
+      const { cost, planPart } = sessionCostParts(usage, config)
       const detail = [
         t('sessionCostTitle'),
         t('sessionDetailTokens', {
@@ -1388,7 +1341,8 @@
         }),
         t('cost', { amount: formatMoneyUsd(cost, config) }),
         ...(planPart > 0 ? [t('sessionDetailPlan', { amount: formatMoneyUsd(planPart, config) })] : []),
-      ].join('; ')
+        modelCostDetail(usage, config),
+      ].filter(Boolean).join('; ')
       return el(Tooltip, { label: detail, side: 'top', delayMs: 500 },
         el('div', { className: 'cm-chip' }, planPart > 0
           ? t('costChipPlan', { amount: formatMoneyUsd(cost, config) })
@@ -1403,31 +1357,18 @@
       const output = usage.output ?? 0
       if (input + cache + output === 0) return null
       const t = makeT(resolveLocale(config.locale))
-      // Plan/API 双轨(issue #64):有 Plan 类用量时金额只计 API 部分,
-      // Plan 以「等值」单独展示(同一会话两类并存可区分);「含 Plan 总额」
-      // 开启时回到单一总额口径(v1.6.0)。
-      let planPart = 0
-      let cost = usageCost(usage, config)
-      if (config.showTotalWithPlan !== true && (usage.apiCost !== undefined || usageHasPlanClass(usage, config))) {
-        const split = { total: usageCost(usage, config), api: recordedApiCost(usage, config) }
-        planPart = Math.max(0, split.total - split.api)
-        if (planPart > 0) cost = split.api
-      }
-      return el('div', { className: 'cm-root' },
-        planPart > 0
-          ? t('sessionLineSplit', {
-              amount: formatMoneyUsd(cost, config),
-              planAmount: formatMoneyUsd(planPart, config),
-              input: formatTokens(input),
-              cache: formatTokens(cache),
-              output: formatTokens(output),
-            })
-          : t('sessionLine', {
-              amount: formatMoneyUsd(cost, config),
-              input: formatTokens(input),
-              cache: formatTokens(cache),
-              output: formatTokens(output),
-            }))
+      const { cost, planPart } = sessionCostParts(usage, config)
+      // 缓存写入属于输入分母，但不是缓存命中；无输入时显示未知。
+      const hitRate = billedInput(usage) > 0 ? ((usage.cacheRead ?? 0) / billedInput(usage) * 100).toFixed(1) + '%' : '—'
+      return el('div', { className: 'cm-root', title: modelCostDetail(usage, config) },
+        t(planPart > 0 ? 'sessionLineSplit' : 'sessionLine', {
+          amount: formatMoneyUsd(cost, config),
+          planAmount: formatMoneyUsd(planPart, config),
+          hitRate,
+          input: formatTokens(input),
+          cache: formatTokens(cache),
+          output: formatTokens(output),
+        }))
     }
 
     // ── 侧边栏:余额行 + 预算图框/今日徽章(纵向堆叠,位于设置按钮上方) ──────
@@ -1677,14 +1618,18 @@
 
     function formatCustomBalanceMoney(amount, config, custom, entryCfg) {
       const unit = customBalanceUnitOf(config, custom, entryCfg)
+      const value = Number(amount)
+      if (!Number.isFinite(value)) return '—'
+      // 仅在显示层换算，快照、预算单位和进度比例始终保留源币种。
+      const rate = config?.currency === 'USD' ? 1 : Number(config?.exchangeRate)
+      if ((entryCfg ?? config?.customBalance)?.convertToDisplayCurrency === true && unit === 'USD' && Number.isFinite(rate) && rate > 0) {
+        const converted = value * rate
+        return Number.isFinite(converted) ? formatMoneyValue(converted, config) : '—'
+      }
       const credits = unit === 'CREDITS'
       const decimals = Math.max(2, Math.min(6, Math.floor(Number(config?.decimals) || 4)))
       const symbol = credits ? '' : unit === 'CNY' ? '¥' : unit === 'EUR' ? '€' : '$'
-      const value = Number(amount)
-      if (!Number.isFinite(value)) return '—'
-      let fixed = value.toFixed(decimals)
-      if (fixed.includes('.')) fixed = fixed.replace(/0+$/, '').replace(/\.$/, '')
-      return symbol + fixed + (credits ? ' Credits' : '')
+      return symbol + fixedAmount(value, decimals) + (credits ? ' Credits' : '')
     }
 
     // 多配置形态(v1.7.0,issue #79):以下四个渲染助手按「单条快照 + 单条配置」
@@ -1699,11 +1644,11 @@
           t('updatedAt', { time: custom.fetchedAt > 0 ? new Date(custom.fetchedAt).toLocaleTimeString() : '—' }),
         ].join(' · ')
       }
-      const spend = custom.spend !== null ? formatCustomBalanceMoney(custom.spend, config, custom, entryCfg) : '—'
-      const maxBudget = custom.maxBudget !== null ? formatCustomBalanceMoney(custom.maxBudget, config, custom, entryCfg) : '—'
+      const spend = custom.spend !== null ? formatAmt(custom.spend) : '—'
+      const maxBudget = custom.maxBudget !== null ? formatAmt(custom.maxBudget) : '—'
       const manualCap = customBalanceUnitOf(config, custom, entryCfg) === 'CREDITS' ? NaN : Number(config?.balance?.budgetCap)
       const capLine = Number.isFinite(manualCap) && manualCap > 0
-        ? t('balanceBudgetCapLabel') + ': ' + formatCustomBalanceMoney(manualCap, config, custom, entryCfg)
+        ? t('balanceBudgetCapLabel') + ': ' + formatAmt(manualCap)
         : ''
       const base = custom.maxBudget !== null && custom.spend !== null
         ? t('customBalanceLine', {
@@ -1881,10 +1826,9 @@
     /**
      * 峰谷相位与相邻切换点(与 lib/pricing.js 的 peakPhaseAt 同逻辑;bundle 无法导入,
      * 修改时两处需同步)。窗口半开区间 [start, end),兼容跨午夜窗口。
-     * 周末全谷价:处于周末区间时返回 weekend: true(当前谷),下一切换点为下一工作日
-     * 首个峰窗口起点;工作日侧扫描 ±4 天并剔除落在周末区间内的切换点。
+     * 周末/公众假期全天谷价；返回 weekend 或 holiday 标记，跳过期间的峰窗。
      */
-    function peakPhaseAt(atMs, windows) {
+    function peakPhaseAt(atMs, windows, holidays) {
       if (!Array.isArray(windows) || windows.length === 0 || !Number.isFinite(atMs)) return null
       const hourAt = (dayOffset, hour) => {
         const date = new Date(atMs)
@@ -1892,31 +1836,37 @@
         date.setUTCHours(hour, 0, 0, 0)
         return date.getTime()
       }
-      const points = []
-      for (let day = -4; day <= 4; day += 1) {
+      const candidates = new Set()
+      const span = Math.max(12, Math.min(380, (Array.isArray(holidays) ? holidays.length : 0) + 7))
+      for (let day = -span; day <= span; day += 1) {
+        candidates.add(hourAt(day, 16))
         for (const w of windows) {
           const start = Number(w?.start)
           const end = Number(w?.end)
           if (!Number.isFinite(start) || !Number.isFinite(end)) continue
-          const pStart = { at: hourAt(day, start), intoPeak: true }
-          const pEnd = { at: hourAt(end <= start ? day + 1 : day, end), intoPeak: false }
-          if (weekendZoneAt(pStart.at) === null) points.push(pStart)
-          if (weekendZoneAt(pEnd.at) === null) points.push(pEnd)
+          candidates.add(hourAt(day, start))
+          candidates.add(hourAt(end <= start ? day + 1 : day, end))
         }
       }
+      const points = [...candidates].sort((a, b) => a - b).flatMap(at => {
+        const before = isPeakHour(at - 1, undefined, windows, holidays)
+        const after = isPeakHour(at, undefined, windows, holidays)
+        return before === after ? [] : [{ at, intoPeak: after }]
+      })
       let prev = null
       let next = null
       for (const p of points) {
         if (p.at <= atMs && (prev === null || p.at > prev.at)) prev = p
         if (p.at > atMs && (next === null || p.at < next.at)) next = p
       }
-      const wk = weekendZoneAt(atMs)
+      const holiday = holidayZoneAt(atMs, holidays)
+      const wk = holiday ?? weekendZoneAt(atMs)
       if (wk !== null) {
         if (next === null) return null
-        return { inPeak: false, weekend: true, prevAtMs: wk.start, nextAtMs: next.at, nextIntoPeak: next.intoPeak }
+        return { inPeak: false, weekend: holiday === null, ...(holiday ? { holiday: true } : {}), prevAtMs: wk.start, nextAtMs: next.at, nextIntoPeak: next.intoPeak }
       }
       if (prev === null || next === null) return null
-      const inPeak = isPeakHour(atMs, undefined, windows)
+      const inPeak = isPeakHour(atMs, undefined, windows, holidays)
       return { inPeak, weekend: false, prevAtMs: prev.at, nextAtMs: next.at, nextIntoPeak: next.intoPeak }
     }
     /** 峰谷显示门控:peakNotice 开关 + peakEnabled + peakEffectiveAt + 非空窗口;不满足返回 null。 */
@@ -1925,11 +1875,12 @@
       const effectiveAtMs = Date.parse(config.peakEffectiveAt || '')
       if (Number.isFinite(effectiveAtMs) && now < effectiveAtMs) return null
       const windows = Array.isArray(config.peakWindows) ? config.peakWindows : []
-      return peakPhaseAt(now, windows)
+      return peakPhaseAt(now, windows, config.peakHolidays)
     }
 
     /** 相位标签键:周末全谷价 / 峰时 / 谷时(chip = 展开态文案,short = 收起态短词,notice = 悬停说明)。 */
     function phaseLabelKeys(view) {
+      if (view.holiday === true) return { short: 'holidayShort', chip: 'holidayChip', notice: 'holidayAllOffPeak' }
       if (view.weekend === true) return { short: 'weekendShort', chip: 'weekendChip', notice: 'weekendAllOffPeak' }
       return view.inPeak
         ? { short: 'peakShort', chip: 'peakShort', notice: 'peakNotice' }
@@ -2001,7 +1952,7 @@
         // 同一切换点只发一次(旧实现比较 tick 时间戳,每 10 秒都"未通知过",会连发)。
         if (!config || config.peakAlertEnabled !== true || config.peakEnabled !== true) return
         if (config.peakAlertWebNotify !== true || !window.Notification || Notification.permission !== 'granted') return
-        const wv = peakPhaseAt(now, Array.isArray(config.peakWindows) ? config.peakWindows : [])
+        const wv = peakPhaseAt(now, Array.isArray(config.peakWindows) ? config.peakWindows : [], config.peakHolidays)
         if (wv === null) return
         const tgt = config.peakAlertTarget === 'peak' || config.peakAlertTarget === 'offpeak' ? config.peakAlertTarget : 'both'
         const intoPeak = wv.nextIntoPeak === true
@@ -2024,7 +1975,7 @@
       if (config.peakAlertEnabled === true) {
         const effectiveAtMs = Date.parse(config.peakEffectiveAt || '')
         if (!(Number.isFinite(effectiveAtMs) && now < effectiveAtMs)) {
-          const view = peakPhaseAt(now, Array.isArray(config.peakWindows) ? config.peakWindows : [])
+          const view = peakPhaseAt(now, Array.isArray(config.peakWindows) ? config.peakWindows : [], config.peakHolidays)
           if (view !== null) {
             const target = config.peakAlertTarget === 'peak' || config.peakAlertTarget === 'offpeak' ? config.peakAlertTarget : 'both'
             const aheadMinutes = Number(config.peakAlertAhead)
@@ -2073,11 +2024,11 @@
         ? t('nextPeakIn', { time: countdownText(view, now, t) })
         : t('nextOffPeakIn', { time: countdownText(view, now, t) })
       return el(Tooltip, { label: t(keys.notice), side: 'right', delayMs: 300 },
-        el('div', { className: 'cm-peak-strip ' + (view.weekend ? 'weekend' : view.inPeak ? 'peak' : 'off') },
+        el('div', { className: 'cm-peak-strip ' + (view.weekend || view.holiday ? 'weekend' : view.inPeak ? 'peak' : 'off') },
           el('div', { className: 'cm-peak-track' },
             el('div', { className: 'cm-peak-segment cm-peak-high' }),
             el('div', { className: 'cm-peak-segment cm-peak-low' }),
-            el('div', { className: 'cm-peak-marker', style: { left: view.weekend ? '50%' : view.inPeak ? '25%' : '75%' } })),
+            el('div', { className: 'cm-peak-marker', style: { left: view.weekend || view.holiday ? '50%' : view.inPeak ? '25%' : '75%' } })),
           el('span', { className: 'cm-peak-chip' }, t(keys.chip) + ' · ' + chipText)))
     }
 
@@ -2096,8 +2047,8 @@
         ? t('nextPeakIn', { time: countdownText(view, now, t) })
         : t('nextOffPeakIn', { time: countdownText(view, now, t) })
       return el(Tooltip, { label: t(keys.notice), side: 'right', delayMs: 300 },
-        el('div', { className: 'cm-peak-classic ' + (view.weekend ? 'weekend' : view.inPeak ? 'peak' : 'off') },
-          el('div', { className: 'cm-peak-classic-marker', style: { left: view.weekend ? '50%' : view.inPeak ? '25%' : '75%' } }),
+        el('div', { className: 'cm-peak-classic ' + (view.weekend || view.holiday ? 'weekend' : view.inPeak ? 'peak' : 'off') },
+          el('div', { className: 'cm-peak-classic-marker', style: { left: view.weekend || view.holiday ? '50%' : view.inPeak ? '25%' : '75%' } }),
           el('div', { className: 'cm-peak-track' },
             el('div', { className: 'cm-peak-segment cm-peak-high' }),
             el('div', { className: 'cm-peak-segment cm-peak-low' })),
@@ -2123,11 +2074,11 @@
         : t('nextOffPeakIn', { time: countdownText(view, now, t) })
       const detail = [t(keys.notice), chipText]
       return el(Tooltip, { label: detail, side: 'right', delayMs: 300 },
-        el('div', { className: 'cm-peak-rail ' + (view.weekend ? 'weekend' : view.inPeak ? 'peak' : 'off'), 'aria-label': detail.join('; ') },
+        el('div', { className: 'cm-peak-rail ' + (view.weekend || view.holiday ? 'weekend' : view.inPeak ? 'peak' : 'off'), 'aria-label': detail.join('; ') },
           el('div', { className: 'cm-peak-rail-track' },
             el('div', { className: 'cm-peak-rail-segment cm-peak-rail-high' }),
             el('div', { className: 'cm-peak-rail-segment cm-peak-rail-low' }),
-            el('div', { className: 'cm-peak-rail-marker', style: { top: view.weekend ? '50%' : view.inPeak ? '25%' : '75%' } })),
+            el('div', { className: 'cm-peak-rail-marker', style: { top: view.weekend || view.holiday ? '50%' : view.inPeak ? '25%' : '75%' } })),
           el('span', { className: 'cm-peak-rail-label' }, t(keys.short))))
     }
 
@@ -2147,11 +2098,11 @@
         : t('nextOffPeakIn', { time: countdownText(view, now, t) })
       const detail = [t(keys.notice), chipText]
       return el(Tooltip, { label: detail, side: 'right', delayMs: 300 },
-        el('div', { className: 'cm-peak-rail-classic ' + (view.weekend ? 'weekend' : view.inPeak ? 'peak' : 'off'), 'aria-label': detail.join('; ') },
+        el('div', { className: 'cm-peak-rail-classic ' + (view.weekend || view.holiday ? 'weekend' : view.inPeak ? 'peak' : 'off'), 'aria-label': detail.join('; ') },
           el('div', { className: 'cm-peak-rail-classic-track' },
             el('div', { className: 'cm-peak-rail-classic-segment peak' }),
             el('div', { className: 'cm-peak-rail-classic-segment off' }),
-            el('div', { className: 'cm-peak-rail-classic-marker', style: { top: view.weekend ? '50%' : view.inPeak ? '25%' : '75%' } })),
+            el('div', { className: 'cm-peak-rail-classic-marker', style: { top: view.weekend || view.holiday ? '50%' : view.inPeak ? '25%' : '75%' } })),
           el('span', { className: 'cm-peak-rail-classic-label' }, t(keys.short))))
     }
     function peakNoticeRailEl(state, config, t) {
@@ -2188,10 +2139,12 @@
             ? el(Fragment, null,
               // 今日金额行受 hideTodayCost 门控(issue #46);金额为真金白银口径(issue #64)。
               config.hideTodayCost === true ? null : el('div', { className: 'cm-bbox-line cm-num' },
-                t('todayShare', {
-                  amount: formatMoneyUsd(displayCostOf(today, config), config),
-                  pct: todayPct === null ? '—' : todayPct.toFixed(1) + '%',
-                })),
+                config.sidebarTodayMetric === 'tokens'
+                  ? t('today') + ' ' + sidebarTodayValue(today, config, t)
+                  : t('todayShare', {
+                    amount: formatMoneyUsd(displayCostOf(today, config), config),
+                    pct: todayPct === null ? '—' : todayPct.toFixed(1) + '%',
+                  })),
               el('div', { className: 'cm-bbox-line cm-num' },
                 t('usedOf', { used: formatMoneyValue(used, config), amount: formatMoneyValue(amount, config) })))
             : null,
@@ -2257,7 +2210,7 @@
 
     /** MiniMax Token Plan 窗口的已用百分比(与其它厂商同口径:windows.percent 即已用)。 */
     function planWindowUsedPct(win) {
-      if (win === null || typeof win !== 'object' || typeof win.percent !== 'number') return null
+      if (win === null || typeof win !== 'object' || win.unlimited || typeof win.percent !== 'number') return null
       return Math.max(0, Math.min(100, Math.round(Number(win.percent) || 0)))
     }
 
@@ -2294,10 +2247,15 @@
       return value === null ? '—' : t(direction === 'remaining' ? 'quotaRemaining' : 'quotaUsed', { pct: value })
     }
 
-    // 悬停或键盘聚焦时重算倒计时,无需为每个窗口建立定时器或发起网络刷新。
-    function useQuotaHoverRefresh() {
+    // 悬停/聚焦刷新提示；显示常驻倒计时的卡片每分钟更新一次，不请求网络。
+    function useQuotaHoverRefresh(resetsAt) {
       const [, setNow] = useState(0)
       const refresh = () => setNow(Date.now())
+      useEffect(() => {
+        if (!resetsAt) return
+        const timer = setInterval(refresh, 60000)
+        return () => clearInterval(timer)
+      }, [resetsAt])
       return { onMouseEnter: refresh, onFocus: refresh }
     }
 
@@ -2310,27 +2268,30 @@
       const pct = planWindowUsedPct(win)
       const level = pct === null ? 'ok' : pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok'
       const barView = simpleBarByDirection(pct, direction)
+      const text = win?.unlimited ? '∞' : barView.label === null ? '—' : barView.label + '%'
       return {
         level,
         pct,
+        text,
         label: barView.label,
         row: el('div', { className: 'cm-mm-row' + (level === 'ok' ? '' : ' ' + level) },
           el('span', { className: 'cm-bbox-label' }, label),
           el('div', { className: 'cm-bbox-bar' },
             el('div', { className: 'cm-bbox-fill', style: { width: barView.width + '%' } })),
-          el('span', { className: 'cm-bbox-pct cm-num' }, barView.label === null ? '—' : barView.label + '%')),
+          el('span', { className: 'cm-bbox-pct cm-num' }, text)),
       }
     }
 
     function MiniMaxPlanCard(props) {
-      const hoverProps = useQuotaHoverRefresh()
       const { five, seven, fetchedAt, t, wide, refresh, direction = 'used' } = props
+      const hoverProps = useQuotaHoverRefresh(five?.resetsAt)
+      const countdown = formatResetCountdown(five?.resetsAt, t)
       const fiveView = miniMaxRow(t('codingPlanRemain5h'), five, direction, t)
       const sevenView = miniMaxRow(t('codingPlanRemain7d'), seven, direction, t)
       const level = fiveView.level === 'over' || sevenView.level === 'over' ? 'over'
         : fiveView.level === 'warn' || sevenView.level === 'warn' ? 'warn' : 'ok'
       const lineOf = (label, win, view) => {
-        const pct = quotaValueText(view.label, direction, t)
+        const pct = win?.unlimited ? t('quotaUnlimited') : quotaValueText(view.label, direction, t)
         const reset = miniMaxResetText(win, t)
         return label + ' ' + pct + (reset ? ' · ' + reset : '')
       }
@@ -2344,10 +2305,11 @@
       const body = el(Fragment, null,
         el('div', { className: 'cm-mm-title' }, t('codingPlanMinimaxTitle')),
         fiveView.row,
-        sevenView.row)
+        sevenView.row,
+        countdown ? el('div', { className: 'cm-mm-reset' }, '5h · ' + countdown) : null)
       const rail = el(Fragment, null,
-        el('div', { className: 'cm-bbox-rail cm-num' }, fiveView.label === null ? '—' : fiveView.label + '%'),
-        el('div', { className: 'cm-bbox-rail cm-num' }, sevenView.label === null ? '—' : sevenView.label + '%'))
+        el('div', { className: 'cm-bbox-rail cm-num' }, fiveView.text),
+        el('div', { className: 'cm-bbox-rail cm-num' }, sevenView.text))
       return el(Tooltip, { label: el('span', { style: { whiteSpace: 'pre-line' } }, detail), side: 'right', delayMs: 300 },
         el('div', {
           ...hoverProps, className: 'cm-bbox cm-mm' + (level === 'ok' ? '' : ' ' + level) + (wide === false ? ' rail' : '')
@@ -2486,6 +2448,9 @@
       if (name === 'weekly' || name === 'week' || name === '7d') return name === '7d' ? '7d' : t('goShortWeekly')
       if (name === 'monthly' || name === 'month') return t('goShortMonthly')
       if (name === 'daily' || name === 'day') return t('goShortDaily')
+      if (name === 'plan') return t('mimoWindowPlan')
+      if (name === 'compensation') return t('mimoWindowCompensation')
+      if (name === 'balance') return t('codingPlanWindowBalance')
       return String(name).replace(/_/g, ' ')
     }
 
@@ -2663,6 +2628,7 @@
       scnet: 'SCNet',
       volcengine: 'Ark',
       qwen: 'Qwen',
+      mimo: 'MiMo',
     }
 
     function QuotaStrip(props) {
@@ -2950,11 +2916,18 @@
           el('button', { type: 'button', className: 'cm-btn small primary', onClick: dismiss }, t('balanceClickGuideOk'))))
     }
 
+    function sidebarTodayValue(today, config, t) {
+      return config.sidebarTodayMetric === 'tokens'
+        ? formatTokens(['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning'].reduce((sum, key) => sum + (Number(today?.[key]) || 0), 0)) + ' ' + t('tokensUnit')
+        : formatMoneyUsd(displayCostOf(today, config), config)
+    }
+
     function BudgetBoxContent(props) {
       const { state, wide } = props
       const today = state.today
       const config = state.config
       const t = makeT(resolveLocale(config?.locale))
+      const todayValue = sidebarTodayValue(today, config, t)
       const budget = config.budget ?? { enabled: false, amount: 100, period: 'month' }
       const rate = Number(config.exchangeRate)
       const budgetUsedUsd = state.budgetUsed ?? (
@@ -2976,10 +2949,9 @@
           t('usedOf', { used: formatMoneyValue(used, config), amount: formatMoneyValue(amount, config) })
             + ' · ' + (pct === null ? '—' : pct.toFixed(1) + '%'),
           // 今日金额行受 hideTodayCost 门控(issue #46)。
-          ...(config.hideTodayCost === true ? [] : [t('todayShare', {
-            amount: formatMoneyUsd(todayApi, config),
-            pct: todayPct === null ? '—' : todayPct.toFixed(1) + '%',
-          })]),
+          ...(config.hideTodayCost === true ? [] : [config.sidebarTodayMetric === 'tokens'
+            ? t('today') + ' ' + todayValue
+            : t('todayShare', { amount: todayValue, pct: todayPct === null ? '—' : todayPct.toFixed(1) + '%' })]),
           t('monthTotal', {
             month: formatMoneyUsd(displayCostOf(state.month, config), config),
             total: formatMoneyUsd(displayCostOf(state.total, config), config),
@@ -2988,7 +2960,7 @@
         if (props.summary === true) return el(Tooltip, { label: detail, side: 'right', delayMs: 300 },
           el('div', { className: 'cm-simple-summary' + (level === 'ok' ? '' : ' ' + level), tabIndex: 0 },
             el('span', null, t('todayBudget', { period: t(PERIOD_KEYS[budget.period] ?? 'periodMonth') })),
-            el('span', { className: 'cm-num' }, formatMoneyUsd(todayApi, config) + ' / ' + formatMoneyValue(amount, config))))
+            el('span', { className: 'cm-num' }, todayValue + ' / ' + formatMoneyValue(amount, config))))
         const view = budgetBoxBody(state, config, t)
         return el(Tooltip, { label: detail, side: 'right', delayMs: 300 },
           el('div', { className: 'cm-bbox' + (level === 'ok' ? '' : ' ' + level) + (wide ? '' : ' rail') },
@@ -2996,7 +2968,7 @@
       }
 
       const detail = [
-        t('todayCostTitle'),
+        config.sidebarTodayMetric === 'tokens' ? t('todayTokensTitle') : t('todayCostTitle'),
         t('callsTokens', {
           calls: today.calls,
           input: formatTokens(today.input),
@@ -3009,7 +2981,7 @@
       return el(Tooltip, { label: detail, side: 'right', delayMs: 300 },
         el(Fragment, null,
           el('div', { className: 'cm-foot' + (wide ? '' : ' cm-foot-rail') },
-            wide ? el(Fragment, null, t('today'), ' ', el('span', { className: 'cm-num' }, formatMoneyUsd(displayCostOf(today, config), config))) : el(WalletIcon, { size: 16 })),
+            wide ? el(Fragment, null, t('today'), ' ', el('span', { className: 'cm-num' }, todayValue)) : el(WalletIcon, { size: 16 })),
           wide ? peakNoticeEl(state, config, t) : null))
     }
 
@@ -3084,45 +3056,6 @@
       useProjectionRefresh(props, projectionUsage)
       const state = costStore?.state
       const wide = !!props.wide
-      const rootRef = useRef(null)
-      // 兼容外壳 footerActions 与其它插件(如 dsh-remote-web-ui 的「更新/远程控制」行)的图标布局:
-      // - 展开(wide):本插件堆叠保持在最左侧;
-      // - 窄栏(rail):把外壳容器改为纵向排布,本插件置底,同一行的其它插件图标上移。
-      useEffect(() => {
-        const root = rootRef.current
-        const parent = root?.parentElement
-        if (!root || !parent) return
-        const apply = () => {
-          if (wide) {
-            if (parent.firstElementChild !== root) parent.insertBefore(root, parent.firstElementChild)
-          } else {
-            if (parent.lastElementChild !== root) parent.appendChild(root)
-          }
-        }
-        apply()
-        const observer = new MutationObserver(() => { if (root.isConnected) apply() })
-        observer.observe(parent, { childList: true })
-        if (wide) {
-          parent.style.flexDirection = ''
-          parent.style.flexWrap = ''
-          parent.style.alignItems = ''
-          parent.style.gap = ''
-        } else {
-          parent.style.flexDirection = 'column'
-          parent.style.flexWrap = 'nowrap'
-          parent.style.alignItems = 'center'
-          parent.style.gap = '6px'
-        }
-        return () => {
-          observer.disconnect()
-          if (!wide) {
-            parent.style.flexDirection = ''
-            parent.style.flexWrap = ''
-            parent.style.alignItems = ''
-            parent.style.gap = ''
-          }
-        }
-      }, [wide, state])
       if (!state) return null
       const config = state.config
       if (config.sidebarSimple === true) {
@@ -3176,7 +3109,7 @@
       const nodes = []
       if (mergedBudget) nodes.push(el(BudgetBoxContent, { state, wide, summary: true }))
       else if (simple && wide && showToday) nodes.push(el('div', { className: 'cm-simple-summary' },
-        el('span', null, t('today')), el('span', { className: 'cm-num' }, formatMoneyUsd(displayCostOf(state.today, config), config))))
+        el('span', null, t('today')), el('span', { className: 'cm-num' }, sidebarTodayValue(state.today, config, t))))
       if (showBalanceBar) nodes.push(el(BalanceBox, { state, wide, api: props.api }))
       else if (showBalance) nodes.push(el(BalanceRowContent, { state, wide, api: props.api }))
       if (showCustomBalanceBar) nodes.push(el(CustomBalanceBox, { state, wide, api: props.api }))
@@ -3208,6 +3141,5 @@
       if (!wide) nodes.push(peakNoticeRailEl(state, config, t))
       if (modelsOn) nodes.splice(config.sidebarModels.position === 'first' ? 0 : config.sidebarModels.position === 'afterBalance' ? afterBalance : nodes.length, 0,
         el(SidebarModelCosts, { key: 'models', state, wide }))
-      // 外壳的 footerActions 是横向 flex;这里用自建纵向堆叠保证余额在上、图框在下。
-      return el('div', { ref: rootRef, ...(simple ? { tabIndex: 0, role: 'region', 'aria-label': t('sidebarSimple') } : {}), className: 'cm-footer-stack' + (wide ? '' : ' rail') + (compactWide ? ' compact' : '') + (simple ? ' simple' : '') }, ...nodes)
+      return el('div', { ...(simple ? { tabIndex: 0, role: 'region', 'aria-label': t('sidebarSimple') } : {}), className: 'cm-footer-stack' + (wide ? '' : ' rail') + (compactWide ? ' compact' : '') + (simple ? ' simple' : '') }, ...nodes)
     }

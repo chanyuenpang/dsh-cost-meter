@@ -9,6 +9,8 @@ import { sanitizeConfig, applyConfigPatch, Ledger } from '../lib/store.js'
 const sourceDir = new URL('../src/client/', import.meta.url)
 const source = readdirSync(sourceDir).filter(name => name.endsWith('.js')).sort().map(name => readFileSync(new URL(name, sourceDir), 'utf8')).join('')
 const expose = ['SidebarModelCosts', 'ModelSidebarSettings', 'sidebarModelRows', 'modelStatsRows', 'MODEL_SIDEBAR_DEFAULTS', 'MODEL_OPEN_KEY', 'QuotaCard', 'useQuotaRefresh', 'QuotasSection', 'PlanQuotaCard', 'GatewayQuotaCard', 'GoQuotaCard', 'GoQuotaSettings', 'CustomBalanceEntryPanel', 'SidebarFooter', 'CornerChips', 'parseConfig', 'makeT', 'CODING_PLAN_ROWS']
+expose.push('CostSection', 'MiniMaxPlanCard')
+expose.push('BalancePanel', 'CredentialField', 'parseBalance')
 const element = (type, props, ...children) => ({ type, props: props ?? {}, children })
 const nodes = value => Array.isArray(value) ? value.flatMap(nodes) : value && typeof value === 'object' ? [value, ...nodes(value.children)] : []
 const textOf = value => Array.isArray(value) ? value.map(textOf).join(' ') : value && typeof value === 'object' ? textOf(value.children) : typeof value === 'string' || typeof value === 'number' ? String(value) : ''
@@ -98,6 +100,36 @@ const base = sanitizeConfig({ locale: 'en', currency: 'USD', symbol: '$', exchan
   position: 'off', sidebar: false, hideTodayCost: true, hideOfficialBalance: true, goQuota: { enabled: false },
   budget: { enabled: false }, peakEnabled: false, corner: { enabled: false } })
 const e = environment(), t = e.ui.makeT('en')
+
+// #159: sidebar/reset countdown, rail infinity, minute updates and cleanup.
+{
+  const timerEnv = environment(), start = Date.parse('2026-09-22T00:00:00Z')
+  timerEnv.setNow(start)
+  const five = { percent: 25, resetsAt: new Date(start + 90 * 60000).toISOString() }
+  const seven = { unlimited: true, text: '∞', resetsAt: '' }
+  for (const locale of ['en', 'zh']) {
+    timerEnv.setNow(start)
+    const translate = timerEnv.ui.makeT(locale)
+    const props = { five, seven, t: translate, wide: true }
+    const card = timerEnv.mount(timerEnv.ui.MiniMaxPlanCard, props)
+    assert.match(textOf(card.tree), /∞/)
+    assert.ok(textOf(card.tree).includes(translate('resetHours', { h: 1, m: 30 })))
+    assert.ok(textOf(card.tree.props.label).includes(translate('quotaUnlimited')))
+    timerEnv.setNow(start + 31 * 60000)
+    await timerEnv.tick(60000)
+    assert.ok(textOf(card.tree).includes(translate('resetMinutes', { m: 59 })))
+    card.render({ ...props, wide: false })
+    assert.match(textOf(card.tree), /∞/)
+    card.render({ ...props, five: { percent: 25, resetsAt: '' }, seven: null })
+    assert.equal(withClass(card.tree, 'cm-mm-reset').length, 0)
+    assert.ok(!textOf(card.tree).includes('∞'), '未知周窗不能标为无限量')
+    assert.equal(timerEnv.timers.size, 0, '缺少重置时间时取消刷新')
+    card.render(props)
+    card.dispose()
+    assert.equal(timerEnv.timers.size, 0, '卸载清理倒计时')
+  }
+  assert.equal(timerEnv.requests.length, 0, '倒计时不触发网络刷新')
+}
 
 // 持久化、RPC strict schema、旧配置补默认值：UI 与服务端采用同一契约。
 assert.deepEqual(plain(e.ui.MODEL_SIDEBAR_DEFAULTS), base.sidebarModels)
@@ -332,5 +364,111 @@ assert.equal(registered.has('conversation.composer.dock:cost-meter-corner'), fal
 activation.setNow(30000); await activation.tick(1000); assert.equal(getCalls, 3, '关闭后恢复默认 60 秒轮询')
 stop(); for (const cleanup of cleanups.reverse()) cleanup()
 assert.equal(activation.timers.size, 0, '卸载清理轮询')
+// #154: first RPC can race hot installation. Real client apply/store + fake clock.
+const startup = environment(), startupCleanups = [], startupSlots = new Map(), startupEvents = new Map()
+let startupCalls = 0, pending, available = false
+const startupState = { ...live, config: base }
+const startupRemote = { getState: async () => {
+  startupCalls++
+  if (pending) return pending.promise
+  return available ? { ok: true, value: startupState } : { ok: false, error: { message: 'gateway/invocation-unavailable' } }
+} }
+const stopStartup = await startup.apply({ remote: { $mount: async () => () => {} },
+  get: key => key === 'remote.costMeter' ? startupRemote : {
+    inject: (_, fn) => { const cleanup = fn(); if (cleanup) startupCleanups.push(cleanup) },
+    register: (options, component) => { startupSlots.set(options.id, { options, component }); return () => {} },
+  }, effect: fn => { const cleanup = fn(); if (cleanup) startupCleanups.push(cleanup) },
+  on: (event, fn) => { startupEvents.set(event, fn); return () => startupEvents.delete(event) },
+})
+await startup.flush()
+const startupInjected = startupSlots.get('cost-meter').options.inject()
+const startupStore = startupInjected.hooks.cost, startupApi = startupInjected.api
+const panel = startup.mount(startup.ui.CostSection, { useCost: () => startupStore.getSnapshot(), api: startupApi })
+assert.match(textOf(panel.tree), /gateway\/invocation-unavailable/, 'empty panel exposes the RPC error')
+assert.equal(btn(panel.tree, t('refresh')).props.disabled, false)
+let elapsed = 0
+for (const seconds of [2, 4, 8, 16, 32, 60, 60]) {
+  const before = startupCalls
+  startup.setNow(elapsed + seconds * 1000 - 1); await startup.tick(1000)
+  assert.equal(startupCalls, before, 'no early retry or busy loop')
+  elapsed += seconds * 1000
+  startup.setNow(elapsed); await startup.tick(1000)
+  assert.equal(startupCalls, before + 1, 'startup retries back off and cap at 60 seconds')
+}
+pending = deferred()
+const slowFailure = startupApi.reload(), slowCalls = startupCalls
+elapsed += 70000; startup.setNow(elapsed)
+pending.resolve({ ok: false, error: { message: 'gateway/invocation-unavailable' } }); pending = null
+await slowFailure
+startup.setNow(elapsed + 59999); await startup.tick(1000)
+assert.equal(startupCalls, slowCalls, 'backoff starts after a slow request fails, not when it started')
+elapsed += 60000; startup.setNow(elapsed); await startup.tick(1000)
+assert.equal(startupCalls, slowCalls + 1)
+pending = deferred()
+const refresh = btn(panel.tree, t('refresh')).props.onClick()
+panel.render()
+assert.equal(btn(panel.tree, t('refresh')).props.disabled, true, 'manual retry shows loading')
+const inFlightCalls = startupCalls
+startupEvents.get('connection/reset')(); await startupApi.reload()
+assert.equal(startupCalls, inFlightCalls, 'reconnect/manual requests coalesce with in-flight read')
+available = true
+pending.resolve({ ok: true, value: startupState }); pending = null
+await refresh; await startup.flush(); panel.render()
+assert.equal(startupStore.getSnapshot().status, 'ready')
+assert.doesNotMatch(textOf(panel.tree), /gateway\/invocation-unavailable/, 'successful recovery clears initial error')
+startup.setNow(elapsed + 59000); await startup.tick(1000)
+assert.equal(startupCalls, inFlightCalls, 'successful load restores normal 60-second polling')
+startup.doc.hidden = true; startup.setNow(elapsed + 60000); await startup.tick(1000)
+assert.equal(startupCalls, inFlightCalls, 'hidden page skips polling')
+startup.doc.hidden = false; await startup.tick(1000)
+assert.equal(startupCalls, inFlightCalls + 1)
+pending = deferred()
+const lateReload = startupApi.reload(), snapshot = startupStore.getSnapshot()
+stopStartup(); for (const cleanup of startupCleanups.reverse()) cleanup()
+pending.resolve({ ok: true, value: { ...live, today: { cost: 999 } } })
+await lateReload; await startup.flush()
+assert.equal(startupStore.getSnapshot(), snapshot, 'late response cannot update an unmounted store')
+const disposedCalls = startupCalls
+await startupApi.reload()
+assert.equal(startupCalls, disposedCalls)
+assert.equal(startup.timers.size, 0)
+assert.equal(startupEvents.size, 0)
+startup.mount(startup.ui.CostSection, {}) // no store/API: empty state must still render safely
+startup.dispose()
+console.log('[ok] #154 client: startup backoff, error/retry UI, recovery, concurrent reads and teardown')
+
+// #201: dedicated balance key input, source status and refresh concurrency.
+for (const locale of ['zh', 'en']) {
+  const env = environment(), t = env.ui.makeT(locale)
+  const balance = env.ui.parseBalance({ status: 'error', message: 'HTTP 401', keyConfigured: true, keySource: 'file' }, 'balance')
+  const calls = [], request = deferred()
+  const api = {
+    refreshBalance: async () => { calls.push('refresh'); return request.promise },
+    setCredential: async (target, value) => { calls.push([target, value]); return { ok: true, message: 'saved' } },
+    clearCredential: async target => { calls.push(['clear', target]); return { ok: true, message: 'cleared' } },
+  }
+  const panel = env.mount(env.ui.BalancePanel, { state: { balance, config: sanitizeConfig({}) }, api, t })
+  assert.ok(textOf(panel.tree).includes(t('balanceKeyHint')))
+  const input = nodes(panel.tree).find(node => node.type === env.ui.CredentialField)
+  assert.equal(input.props.target, 'balance')
+  assert.equal(input.props.configured, true)
+  const field = env.mount(env.ui.CredentialField, input.props)
+  const password = () => nodes(field.tree).find(node => node.type === 'input')
+  assert.equal(password().props.type, 'password')
+  assert.equal(password().props.value, '', 'stored key is never filled back into the input')
+  password().props.onChange({ target: { value: 'TEST_BALANCE_UI_KEY' } }); await env.flush()
+  await btn(field.tree, t('credentialSave')).props.onClick(); await env.flush()
+  assert.equal(password().props.value, '')
+  await btn(field.tree, t('credentialClear')).props.onClick()
+  assert.deepEqual(calls, [['balance', 'TEST_BALANCE_UI_KEY'], ['clear', 'balance']])
+  const refresh = btn(panel.tree, t('refreshBalance')).props.onClick
+  const first = refresh(), second = refresh()
+  assert.equal(calls.filter(call => call === 'refresh').length, 1)
+  request.resolve({ ok: true, message: 'refreshed' })
+  await Promise.all([first, second]); await env.flush()
+  assert.ok(textOf(panel.tree).includes('refreshed'))
+  env.dispose()
+}
+console.log('[ok] #201 client: bilingual dedicated credential controls, no key echo and refresh concurrency')
 e.dispose(); activation.dispose()
 console.log('[ok] #142/#143 模型金额/90天/旧账/币种/持久化/展开/Top-N/独立刷新/排序与身份/刷新门控/共享快照通过')

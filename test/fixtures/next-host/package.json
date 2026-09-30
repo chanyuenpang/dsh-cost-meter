@@ -1,0 +1,8 @@
+{
+  "name": "dsh-cost-meter-test-host-next",
+  "private": true,
+  "description": "Pinned DSH 0.2 host for compatibility, installation and RPC regression tests.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.1"
+  }
+}

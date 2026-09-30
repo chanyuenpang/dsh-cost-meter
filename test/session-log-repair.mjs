@@ -96,16 +96,17 @@ try {
       const sessionsRoot = join(root, 'host', compression)
       const store = () => new Persistence(new Context(), { root: sessionsRoot, compression })
       const persistence = store(), id = `session-native-${compression}`
-      const meta = { version: 3, id, createdAt: at, isSeeded: false, delegationDepth: 0 }
+      const meta = { ...Session.create(id).header, createdAt: at, delegationDepth: 0 }
       const live = Session.create(id, undefined, meta, 0)
-      live.append('session/title', { title: 'fixture' })
+      const titleData = title => ({ title, ...(live.header.version >= 4 ? { messageSeqs: [], source: { kind: 'user' } } : {}) })
+      live.append('session/title', titleData('fixture'))
       live.append(NATIVE_SEARCH_USAGE_EVENT, data)
       const before = structuredClone(live.snapshotEvents())
       const writer = await persistence.create(live.header)
       await writer.append(before)
       await writer.close()
       const path = listSessionLogs(sessionsRoot)[0]
-      assert.ok(path.includes('session.v3.jsonl'), 'fixture is produced by the actual host writer')
+      assert.ok(path.includes(`session.v${live.header.version}.jsonl`), 'fixture is produced by the actual host writer')
       await assert.rejects(store().open(id, 'read'), /unknown.*ignorable|unknown to this harness/)
       assert.throws(() => validateStoredEvents(live.header, structuredClone(before)), /unknown/)
       const acquireLease = (dir, sessionId) => persistence.acquireLease(sessionId, undefined, dir)
@@ -135,7 +136,8 @@ try {
           Buffer.concat([zlib.zstdCompressSync(plaintext[0].subarray(0, -1)), ...frames.slice(1).map(frame => repairedBytes.subarray(frame.start, frame.end))]),
         ]) {
           writeFileSync(path, malformed)
-          try { await assert.rejects(store().list(), /first frame is not exactly one header line/) }
+          // DSH 0.2 lists headers lazily; opening still validates frame boundaries.
+          try { await assert.rejects(store().open(id, 'read'), /first frame is not exactly one header line/) }
           finally { writeFileSync(path, repairedBytes) }
         }
         assert.deepEqual((await store().list()).map(item => item.header.id), [id], 'repair retains an independently readable header with its newline')
@@ -162,7 +164,7 @@ try {
       assert.equal((await nativeSearchRecordsFor(ledger.path, id)).length, 1)
       for (const dispose of effects.reverse()) dispose()
       ledger.close()
-      resumed.append('session/title', { title: 'after repair and search' })
+      resumed.append('session/title', titleData('after repair and search'))
       const reopened = await store().open(id, 'write')
       await reopened.append(resumed.snapshotEvents().slice(restored.length))
       await reopened.close()

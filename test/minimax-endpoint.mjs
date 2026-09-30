@@ -3,13 +3,29 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
-import { normalizeMiniMaxBaseUrl, miniMaxEndpoints, queryCodingPlan } from '../lib/coding-plans.js'
+import { normalizeMiniMaxBaseUrl, miniMaxEndpoints, queryCodingPlan, parseMiniMaxRemains } from '../lib/coding-plans.js'
 import { sanitizeConfig, applyConfigPatch, Ledger } from '../lib/store.js'
 import { stateSchema } from '../lib/typert.host.js'
 import { CLIENT_CONTRIBUTION } from './typert-codecs.mjs'
 import { apply } from '../lib/index.js'
 
 const defaults = sanitizeConfig({})
+// #159: only the explicit API sentinel means unlimited; missing values stay unknown.
+const unlimited = { unlimited: true, text: '∞', resetsAt: '' }
+for (const status of [3, '3']) {
+  const row = { model_name: 'general', current_interval_remaining_percent: 75, current_weekly_status: status, end_time: 1800000000000 }
+  for (const raw of [row, { data: row }, { model_remains: [{ model_name: 'video', current_weekly_status: 3 }, row] }]) {
+    const parsed = parseMiniMaxRemains(raw)
+    assert.deepEqual(parsed['7d'], unlimited)
+    assert.equal(parsed['5h'].percent, 25)
+    assert.equal(parsed['5h'].resetsAt, new Date(row.end_time).toISOString())
+  }
+}
+assert.equal(parseMiniMaxRemains({ current_interval_remaining_percent: 50 })['7d'], undefined)
+assert.equal(parseMiniMaxRemains({ current_weekly_remaining_percent: null, current_weekly_total_count: 0 }), null)
+assert.equal(parseMiniMaxRemains({ current_weekly_remaining_percent: '' }), null)
+assert.equal(parseMiniMaxRemains({ model_remains: [{ model_name: 'video', current_weekly_status: 3 }] }), null)
+assert.deepEqual(parseMiniMaxRemains({ model_remains: [{ model_name: 'general', current_weekly_status: 3 }] })['7d'], unlimited)
 assert.equal(defaults.codingPlans.minimax.baseUrl, '')
 const origin = 'https://quota.example:8443'
 const configured = applyConfigPatch(defaults, { codingPlans: { minimax: { enabled: true, baseUrl: ' HTTPS://QUOTA.EXAMPLE:8443/ ' } } })
@@ -85,6 +101,8 @@ try {
     assert.equal(host.config.codingPlans.minimax.baseUrl, state.config.codingPlans.minimax.baseUrl)
     assert.equal(client.config.codingPlans.minimax.baseUrl, state.config.codingPlans.minimax.baseUrl)
     assert.equal(host.codingPlans.minimax.baseUrl, state.config.codingPlans.minimax.baseUrl)
+    assert.deepEqual(host.codingPlans.minimax.windows, state.codingPlans.minimax.windows)
+    assert.deepEqual(client.codingPlans.minimax.windows, state.codingPlans.minimax.windows)
     assert.ok(!JSON.stringify(wire).includes('TEST_MINIMAX_KEY'))
   }
   await api.updateConfig({ locale: 'en', balance: { display: 'off' }, goQuota: { enabled: false }, codingPlans: { minimax: { enabled: true, baseUrl: origin } } })
@@ -98,6 +116,12 @@ try {
   await until(() => existsSync(diskPath) && JSON.parse(readFileSync(diskPath)).config.codingPlans.minimax.baseUrl === origin)
   assert.equal(Ledger.open().config.codingPlans.minimax.baseUrl, origin, '重开账本保留自定义域名')
   assert.ok(!readFileSync(diskPath, 'utf8').includes('TEST_MINIMAX_KEY'))
+
+  respond = async () => Response.json({ ...payload(25), current_weekly_status: 3 })
+  result = await api.refreshCodingPlan('minimax')
+  assert.deepEqual(result.state.codingPlans.minimax.windows['7d'], unlimited)
+  assert.equal(result.state.planStats?.providers?.minimax?.windows?.weekly, undefined, '无限量不生成每 1% 用量估计')
+  checkState(result.state)
 
   let releaseOld
   respond = async url => new URL(url).origin === origin ? await new Promise(resolve => { releaseOld = () => resolve(Response.json(payload(99))) }) : Response.json(payload(10))

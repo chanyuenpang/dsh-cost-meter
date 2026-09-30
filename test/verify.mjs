@@ -3,6 +3,9 @@
  * 计费数学部分基于内置价格表,离线可跑;官方页面解析失败时仅告警不中断。
  */
 import assert from 'node:assert/strict'
+import './zai-candidates.mjs'
+import './ledger-concurrency.mjs'
+import './external-usage.mjs'
 import { readFileSync, rmSync, mkdirSync, writeFileSync, readdirSync, mkdtempSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname, resolve } from 'node:path'
@@ -16,6 +19,7 @@ import {
   isPeakHour,
   peakPhaseAt,
   weekendZoneAt,
+  holidayZoneAt,
   WEEKEND_OFFPEAK_EFFECTIVE_AT,
   matchModelId,
   canonModelId,
@@ -27,6 +31,7 @@ import {
   PROVIDER_MODEL_FAMILIES,
   DEFAULT_PEAK_EFFECTIVE_AT,
   DEFAULT_PEAK_WINDOWS,
+  DEFAULT_PEAK_HOLIDAYS,
   LEGACY_BASE_BOUNDARY,
   LEGACY_BASE_PRICES,
   LEGACY_BASE_PRICES_CNY,
@@ -34,6 +39,8 @@ import {
   providerPriceEntryFor,
   isWrapperProviderId,
   wrapperUpstreamProvider,
+  parseOpenRouterModels,
+  OPENROUTER_MODELS_URL,
 } from '../lib/pricing.js'
 import { Ledger, applyConfigPatch, localDayKey, sanitizeConfig, reconcileBalanceDelta, pickBalanceInfo, sanitizeDays, officialCostOfDay, splitLedgerApiCost, zeroDay, repairLedgerPricing, dedupeWrapperProviderDays, unpriceLocalOriginModels, stripSecrets, secretRefOf, readSecret, SECRET_TARGETS } from '../lib/store.js'
 import {
@@ -348,6 +355,43 @@ console.log('[ok] usdFromCost(CNY 折算/USD 原值/非法兜底/往返抵消)�
   console.log('[ok] 人民币计价接线(选页/回退/币种标记/default 替换/下拉/白名单/回放同口径)通过')
 }
 
+// 1f) OpenRouter 实时刷新(Phase2):目录解析纯函数 + index.js 接线。
+{
+  const today = new Date().toISOString().slice(0, 10)
+  const sample = { data: [
+    { id: 'meta/muse-spark-1.3-contributor', pricing: { prompt: '0.0000001', completion: '0.0000002', input_cache_read: '0.000000002' } },
+    { id: 'google/gemini-3.8-flash', pricing: { prompt: '0.00000075', completion: '0.00000375', input_cache_read: '0.000000075', input_cache_write: '0.000000041667' } },
+    { id: 'openrouter/auto', pricing: { prompt: '-1', completion: '-1' } },
+    { id: 'openrouter/fusion', pricing: { prompt: '-1', completion: '-1' } },
+    { id: '', pricing: { prompt: '1', completion: '1' } },
+    { id: 'free/model', pricing: { prompt: '0', completion: '0' } },
+    { id: 'bad/model', pricing: { prompt: 'abc', completion: '1' } },
+    { id: 'half/model', pricing: { prompt: '0.000001' } },
+    { id: '__proto__', pricing: { prompt: '1', completion: '1' } },
+    { id: 'nocache/model', pricing: { prompt: '0.000001', completion: '0.000002', web_search: '0.1', image: '5' } },
+    null,
+    'x',
+  ] }
+  const { models } = parseOpenRouterModels(sample)
+  assert.deepEqual(models['meta/muse-spark-1.3-contributor'], { input: 0.1, output: 0.2, billingMode: 'flat', sourceUrl: OPENROUTER_MODELS_URL, checkedAt: today, cachedInput: 0.002 })
+  assert.deepEqual(models['google/gemini-3.8-flash'], { input: 0.75, output: 3.75, billingMode: 'flat', sourceUrl: OPENROUTER_MODELS_URL, checkedAt: today, cachedInput: 0.075, cacheWrite: 0.041667 })
+  assert.ok(!('openrouter/auto' in models) && !('openrouter/fusion' in models), '路由聚合占位价(-1)跳过')
+  assert.ok(!('' in models) && !('bad/model' in models) && !('half/model' in models), '空 id/非数字/缺 completion 跳过')
+  assert.deepEqual({ input: models['free/model'].input, output: models['free/model'].output }, { input: 0, output: 0 }, '免费模型收 0')
+  assert.ok(!('web_search' in models['nocache/model']) && !('image' in models['nocache/model']), '非 token 计费键忽略')
+  assert.ok(!({}.hasOwnProperty.call(models, '__proto__')), '原型污染键跳过')
+  // 解析输出直通 normalizePrice(与 refreshOpenRouterPrices 内调用一致)。
+  const orEntry = normalizePrice(models['meta/muse-spark-1.3-contributor'])
+  assert.deepEqual({ cacheMiss: orEntry.cacheMiss, cacheHit: orEntry.cacheHit, output: orEntry.output, billingMode: orEntry.billingMode }, { cacheMiss: 0.1, cacheHit: 0.002, output: 0.2, billingMode: 'flat' })
+  // 坏载荷抛 ERR_NO_MODELS 且带 code(供 index.js 按语言渲染)。
+  for (const bad of [{}, null, undefined, { data: 'x' }, { data: null }]) {
+    let caught = null
+    try { parseOpenRouterModels(bad) } catch (error) { caught = error }
+    assert.equal(caught?.code, 'ERR_NO_MODELS', `坏载荷抛 ERR_NO_MODELS: ${JSON.stringify(bad)}`)
+  }
+  console.log('[ok] OpenRouter 目录价格解析与单位换算通过')
+}
+
 // 2) 计费数学(内置价格表,离线可跑)。
 const flash = DEFAULT_PRICE_TABLE.models['deepseek-v4-flash']
 const pro = DEFAULT_PRICE_TABLE.models['deepseek-v4-pro']
@@ -473,6 +517,59 @@ const friNightPhase = peakPhaseAt(Date.parse('2026-08-28T13:00:00Z'), DEFAULT_PE
 assert.equal(friNightPhase.weekend, false, '周五晚尚未进入周末区间')
 assert.equal(friNightPhase.nextAtMs, Date.parse('2026-08-31T01:00:00Z'), '周五晚下一切换直达周一入峰(跳过周末全部窗口)')
 console.log('[ok] 周末全谷价新规(区间/窗口/档位/相位)通过')
+
+// 2.3.2a) 中国公众假期全天谷价；调休上班的周末仍是谷价（官方定价页脚注）。
+{
+  const midAutumn = Date.parse('2026-09-25T03:06:00Z')
+  const start = Date.parse('2026-09-24T16:00:00Z')
+  assert.deepEqual(holidayZoneAt(midAutumn), { start, end: Date.parse('2026-09-25T16:00:00Z') })
+  assert.equal(holidayZoneAt(start - 1), null, '北京假日零点前仍是普通工作日')
+  assert.equal(isPeakHour(midAutumn, peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS), false, '中秋节不进入峰价')
+  assert.equal(isPeakHour(Date.parse('2026-09-24T03:06:00Z'), peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS), true, '前一工作日仍进入峰价')
+  assert.equal(isPeakHour(Date.parse('2026-09-20T03:06:00Z'), peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS), false, '调休上班周日仍按全天谷价')
+  assert.equal(isPeakHour(Date.parse('2026-10-10T03:06:00Z'), peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS), false, '调休上班周六仍按全天谷价')
+  assert.equal(isPeakHour(midAutumn, peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS, []), true, '用户清空假日表可覆盖默认值')
+  assert.equal(isPeakHour(Date.parse('2026-11-02T03:06:00Z'), peakCfg.effectiveAtMs, DEFAULT_PEAK_WINDOWS, ['2026-11-02']), false, '自定义假日生效')
+  assert.ok(DEFAULT_PEAK_HOLIDAYS.includes('2026-10-07'), '国庆全部日期预置')
+  assert.deepEqual(tierFor(pro, midAutumn, peakCfg), tierFor(pro, midAutumn, { enabled: false }), '假日取谷价档')
+  const phase = peakPhaseAt(midAutumn, DEFAULT_PEAK_WINDOWS)
+  assert.equal(phase.holiday, true, '假日展示标签')
+  assert.equal(phase.nextAtMs, Date.parse('2026-09-28T01:00:00Z'), '跨中秋三日直达下个峰窗')
+  assert.equal(peakPhaseAt(Date.parse('2026-10-03T03:06:00Z'), DEFAULT_PEAK_WINDOWS).nextAtMs, Date.parse('2026-10-08T01:00:00Z'), '国庆七日倒计时无虚假切换')
+  const midnightWindow = [{ start: 15, end: 18 }]
+  const beforeHoliday = Date.parse('2026-09-24T15:30:00Z')
+  assert.equal(isPeakHour(beforeHoliday, peakCfg.effectiveAtMs, midnightWindow), true, '假日前夜自定义窗口仍可进入峰价')
+  assert.equal(peakPhaseAt(beforeHoliday, midnightWindow).nextAtMs, start, '跨北京时间假日零点的峰窗口即时切换为谷价')
+  const cfg = sanitizeConfig({})
+  assert.deepEqual(cfg.peakHolidays, DEFAULT_PEAK_HOLIDAYS)
+  assert.deepEqual(applyConfigPatch(cfg, { peakHolidays: ['2026-11-02'] }).config.peakHolidays, ['2026-11-02'])
+  assert.ok(applyConfigPatch(cfg, { peakHolidays: ['2026-02-30'] }).errors.length > 0, '无效日期被拒绝')
+  const root = mkdtempSync(join(osTmpdir(), 'cm-holiday-history-'))
+  const id = 'holiday-session'
+  const logDir = join(root, '--proj--', id)
+  mkdirSync(logDir, { recursive: true })
+  const tokens = { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0 }
+  const records = [
+    { type: 'session', version: 0, id, createdAt: midAutumn - 60000, delegationDepth: 0 },
+    { type: 'request/header', seq: 0, time: midAutumn - 60000, data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-flash' } } } },
+    { type: 'assistant/message', seq: 0, time: midAutumn, data: { turn: 1, step: 1, usage: { inputTokens: tokens.input, outputTokens: tokens.output, cacheReadTokens: 0, cacheWriteTokens: 0 } } },
+  ]
+  writeFileSync(join(logDir, 'session.jsonl'), records.map(record => JSON.stringify(record)).join('\n') + '\n')
+  const ledger = new Ledger(sanitizeConfig({ peakHolidays: [] }), {}, join(root, 'ledger.json'))
+  ledger.scheduleWrite = () => {}
+  ledger.account(tokens, 'deepseek-v4-flash', id, midAutumn)
+  const date = localDayKey(midAutumn)
+  const oldCost = ledger.days[date].cost
+  ledger.config.peakHolidays = [...DEFAULT_PEAK_HOLIDAYS]
+  const stats = await recomputeLedgerPricingBasis(ledger, root, (_, keyDate) => keyDate === date, new Set([id]))
+  assert.equal(stats.recostedSessions, 1, '完整日志的假日会话得到重算')
+  assert.ok(Math.abs(ledger.days[date].cost * 2 - oldCost) < 1e-9, '假日峰时历史金额修正为半价')
+  assert.ok(Math.abs(ledger.days[date].sessions[0].cost - ledger.days[date].cost) < 1e-9, '会话与每日金额一致')
+  await recomputeLedgerPricingBasis(ledger, root, (_, keyDate) => keyDate === date, new Set([id]))
+  assert.ok(Math.abs(ledger.days[date].cost * 2 - oldCost) < 1e-9, '重复重算不再次折扣')
+  rmSync(root, { recursive: true, force: true })
+  console.log('[ok] 法定假日峰谷价与配置通过')
+}
 
 // 2.3.3) 周末规则一致性回归夹具(issue #54):15 条档位向量 + 3 条下一切换向量,
 // CC0-1.0(来源 github.com/xyzs996/deepseek-peak-hours 的 deepseek-peak-offpeak-vectors.json)。
@@ -927,7 +1024,7 @@ const mmUnlimited = parseMiniMaxRemains({
   current_weekly_total_count: 1000,
   current_weekly_usage_count: 100,
 })
-assert.equal(mmUnlimited['5h'], undefined, 'MiniMax 不限量 5 小时窗不展示')
+assert.deepEqual(mmUnlimited['5h'], { unlimited: true, text: '∞', resetsAt: '' }, 'MiniMax 不限量窗口显式展示且不伪造百分比')
 assert.equal(mmUnlimited['7d'].percent, 10, 'MiniMax 周窗照常展示')
 // 5.4c) 现行 Token Plan:model_remains + remaining_percent,total=0;取 general,跳过 video 无限量行。
 const mmModelRemains = parseMiniMaxRemains({
@@ -978,6 +1075,8 @@ const officialHosts = {
   commandcode: ['api.commandcode.ai'],
   scnet: [],
   volcengine: ['open.volcengineapi.com'],
+  qwen: [],
+  mimo: ['platform.xiaomimimo.com'],
 }
 for (const id of CODING_PLAN_PROVIDER_IDS) {
   assert.ok(CODING_PLAN_PROVIDERS[id] !== undefined, `提供商注册:${id}`)
@@ -1178,6 +1277,9 @@ assert.deepEqual(CODING_PLAN_PROVIDERS.scnet.credentialEnvs, [], 'scnet 不需�
   const base = sanitizeConfig({})
   assert.equal(base.hideOfficialBalance, false, '隐藏官方余额默认关闭')
   assert.equal(base.hideTodayCost, false, '隐藏今日消耗默认关闭')
+  assert.equal(base.sidebarTodayMetric, 'cost', '侧边栏默认显示费用')
+  assert.equal(applyConfigPatch(base, { sidebarTodayMetric: 'tokens' }).config.sidebarTodayMetric, 'tokens', '可切换显示 Token')
+  assert.ok(applyConfigPatch(base, { sidebarTodayMetric: 'unknown' }).errors.length > 0, '未知显示方式被拒绝')
   const patched = applyConfigPatch(base, { hideOfficialBalance: true, hideTodayCost: true })
   assert.equal(patched.errors.length, 0, '合法布尔补丁通过')
   assert.equal(patched.config.hideOfficialBalance, true, '隐藏官方余额可开启')
@@ -1199,13 +1301,14 @@ assert.deepEqual(CODING_PLAN_PROVIDERS.scnet.credentialEnvs, [], 'scnet 不需�
   assert.ok(clientSource.includes('config.hideTodayCost === true ? null : el(Card,'), '概览今日卡片可整体隐藏')
   assert.ok(clientSource.includes("&& config.hideOfficialBalance !== true\n          ? el(BalancePanel"), '设置页官方余额面板可整体隐藏')
   assert.ok(clientSource.includes('config.hideTodayCost === true ? null : el(\'div\', { className: \'cm-bbox-line cm-num\' }'), '预算盒明细今日金额行可隐藏')
-  assert.ok(clientSource.includes('...(config.hideTodayCost === true ? [] : [t(\'todayShare\''), '预算 tooltip 今日金额行可隐藏')
+  assert.ok(clientSource.includes("...(config.hideTodayCost === true ? [] : [config.sidebarTodayMetric === 'tokens'"), '预算 tooltip 今日金额行可隐藏')
   // 设置开关与读侧白名单。
   assert.ok(clientSource.includes("setField('hideOfficialBalance'"), '设置 UI 含隐藏官方余额开关')
   assert.ok(clientSource.includes("setField('hideTodayCost'"), '设置 UI 含隐藏今日消耗开关')
   assert.ok(clientSource.includes('hideOfficialBalanceLabel') && clientSource.includes('hideTodayCostLabel'), '开关文案存在(zh/en)')
   assert.ok(clientSource.includes('hideOfficialBalance: v.hideOfficialBalance === true'), 'parseConfig 白名单含 hideOfficialBalance(读侧不剥离)')
   assert.ok(clientSource.includes('hideTodayCost: v.hideTodayCost === true'), 'parseConfig 白名单含 hideTodayCost(读侧不剥离)')
+  assert.ok(clientSource.includes("sidebarTodayMetric: v.sidebarTodayMetric === 'tokens'") && clientSource.includes("setField('sidebarTodayMetric'"), '今日指标双端接线')
   assert.ok(clientSource.includes('showSessionId: v.showSessionId === true'), 'parseConfig 白名单补齐 showSessionId(既有缺陷修复)')
   // v1.5.38 的隐私模式遮罩已整体移除。
   assert.ok(!clientSource.includes('hideAmounts'), '客户端不再含 hideAmounts 隐私遮罩')
@@ -1561,6 +1664,22 @@ console.log('[ok] coding plan adapter/解析器/软失败/配置清洗/清单断
   assert.equal(new Set(signals).size, 3, '每次尝试新建信号(不复用已中止信号)')
   assert.ok(signals.every(s => s !== null && s.aborted === false), '调用时刻信号均未中止')
 
+  // 默认 accept-encoding: identity:未显式指定时注入(防 CDN 裸压缩响应体,
+  // 实测 api.commandcode.ai),显式指定时保留调用方原值。
+  const headerPrevFetch = globalThis.fetch
+  const seenHeaders = []
+  globalThis.fetch = async (_url, init = {}) => {
+    seenHeaders.push(init.headers)
+    return { ok: true, status: 200 }
+  }
+  await fetchWithRetry('https://example.test/a', { headers: { a: 'b' } }, { attempts: 1 })
+  await fetchWithRetry('https://example.test/b', { headers: { a: 'c', 'accept-encoding': 'gzip' } }, { attempts: 1 })
+  globalThis.fetch = headerPrevFetch
+  const defaulted = new Headers(seenHeaders[0])
+  assert.equal(defaulted.get('accept-encoding'), 'identity', '未指定时默认注入 accept-encoding: identity')
+  assert.equal(defaulted.get('a'), 'b', '默认注入保留调用方其余请求头')
+  assert.equal(new Headers(seenHeaders[1]).get('accept-encoding'), 'gzip', '调用方显式 accept-encoding 优先,不被覆盖')
+
   // 非瞬时错误立即抛出,不重试。
   calls = 0
   globalThis.fetch = async () => {
@@ -1582,6 +1701,7 @@ console.log('[ok] coding plan adapter/解析器/软失败/配置清洗/清单断
   assert.equal(calls, 2, '尝试次数不超过 attempts 上限')
   globalThis.fetch = prevFetch
   console.log('[ok] fetchWithRetry/isTransientFetchError(分类/重试/退避信号/不重试业务错误)通过')
+  console.log('[ok] fetchWithRetry 默认 accept-encoding=identity(可被调用方覆盖)通过')
 }
 
 console.log('[ok] 金额格式:', formatMoney(0.012345, { exchangeRate: 7.2, symbol: '¥', decimals: 4 }), formatMoney(0.0000012, { exchangeRate: 1, symbol: '$', decimals: 6 }), formatMoney(123.456, { exchangeRate: 7.2, symbol: '¥', decimals: 4 }))
@@ -1593,12 +1713,13 @@ assert.equal(matchModelId('deepseek-v4-flash', dsCandidates), 'deepseek-v4-flash
 assert.equal(matchModelId('deepseek-v4-flash-2026-08-01', dsCandidates), 'deepseek-v4-flash', '去日期后缀')
 assert.equal(matchModelId('deepseek-v4-pro-v2', dsCandidates), 'deepseek-v4-pro', '去版本后缀')
 assert.equal(matchModelId('deepseek-v4-flash-128k', dsCandidates), 'deepseek-v4-flash', '前缀匹配')
-assert.equal(matchModelId('gpt-5-mini-2026-01-01', ['gpt-5-2025-08-07', 'gpt-4.1-2025-04-14']), 'gpt-5-2025-08-07', '家族 token 相似')
+assert.equal(matchModelId('gpt-5-mini-2026-01-01', ['gpt-5-2025-08-07', 'gpt-4.1-2025-04-14']), null, '不同变体不互配')
 assert.equal(matchModelId('totally-unknown-model', dsCandidates), null, '阈值防误配')
+assert.equal(billingClassOf('openai-codex', 'gpt-6-luna', { models: { 'openai-codex:gpt-6-luna': 'plan' } }, new Set()), 'plan', '未知 provider 的模型级 Plan 覆盖优先生效')
 // 防跨版本家族误配(issue #18:订阅制 glm-5.3 曾被匹配到 glm-5.2 付费价实时虚增)。
 assert.equal(matchModelId('glm-5.3', ['glm-5.2', 'glm-5.1']), null, '分歧位为版本号时拒绝跨版本匹配')
 assert.equal(matchModelId('claude-opus-4-9', ['claude-opus-4-8']), null, '同家族不同版本不误配')
-assert.equal(matchModelId('glm-5', ['glm-5.3', 'glm-5.2']), 'glm-5.3', '前缀式家族匹配保留(请求名更泛)')
+assert.equal(matchModelId('glm-5', ['glm-5.3', 'glm-5.2']), null, '不猜测版本号')
 // 数字分叉守卫覆盖宽泛包含/前缀阶段(此前守卫只在家族 token 阶段,'glm-53'
 // 包含 'glm5' 即命中旧版低价):候选是请求前缀且余量全为数字 → 版本分叉拒绝;
 // '-128k' 等容量后缀(余量非纯数字)不受影响。
@@ -1707,9 +1828,9 @@ console.log('[ok] 宽泛匹配与跨厂商兑底(路由 provider 费用为零修
 {
   const retryIndexSource = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
   assert.ok(retryIndexSource.includes('err.soft = true'), 'queryBalance 守卫错误(未配置 Key/非官方端点)标记 soft')
-  assert.ok(retryIndexSource.includes("...balanceCache, value: { ...emptyBalance(), status: 'error'"), '余额硬失败写 error 状态并保留旧 fetchedAt')
+  // 官方余额的 401 缓存与 500 自动恢复由 balance-credentials.mjs 实际调用验证。
   assert.ok(retryIndexSource.includes("...goQuotaCache, value: { ...emptyGoQuota(), status: 'error'"), 'Go 额度硬失败写 error 状态并保留旧 fetchedAt')
-  assert.ok(retryIndexSource.includes("...cache,\n          value: {\n            ...emptyCustomBalance(),\n            label: typeof config?.label === 'string' ? config.label : '',\n            status: 'error',"), '自定义余额硬失败写 error 状态并保留旧 fetchedAt(多配置按条缓存)')
+  // 自定义余额的失败与恢复通过 cache-lifecycle.mjs 实际调用服务验证。
   assert.ok(retryIndexSource.includes("...(codingPlanCaches[id] ?? { fetchedAt: 0, value: emptyCodingPlan() }),\n          value: { ...emptyCodingPlan(), status: 'error'"), 'Coding Plan 硬失败写 error 状态并保留旧 fetchedAt')
   assert.ok(retryIndexSource.includes("error && error.soft === true"), '软失败判定读取 error.soft 标记')
   console.log('[ok] 外部查询软/硬失败缓存策略断言通过')
@@ -1745,6 +1866,19 @@ console.log('[ok] 宽泛匹配与跨厂商兑底(路由 provider 费用为零修
   let projState = def.init()
   for (const ev of events) projState = def.apply(projState, ev)
   assert.equal(projState.last.key, '2:1', '投影状态推进到最后样本')
+  assert.ok(projState.byProviderModel['deepseek:deepseek-v4-flash'].cost > 0, '首次调用按原模型计费')
+  assert.ok(projState.byProviderModel['openai:gpt-5.6-luna'].cost > 0, '切换后的调用按新模型计费')
+  assert.ok(Math.abs(projState.totals.cost - Object.values(projState.byProviderModel).reduce((sum, row) => sum + row.cost, 0)) < 1e-12, '混合模型会话费用为逐模型费用之和')
+  const switchedWithoutHeader = {
+    type: 'assistant/message', time: 1720000005000, data: { turn: 1, step: 1,
+      message: { source: { provider: 'deepseek', model: 'deepseek-v4-pro' } },
+      usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+  }
+  const sourceState = def.apply(def.apply(def.init(), events[1]), switchedWithoutHeader)
+  assert.ok(sourceState.byProviderModel['deepseek:deepseek-v4-pro'].cost > 0, '最终消息的模型来源可修正缺失的切换 header')
+  assert.equal(sourceState.byProviderModel['deepseek:deepseek-v4-flash'], undefined, '不会把切换后用量挂在首个模型')
+  const replayedSource = replaySessionRecords([{ type: 'session', id: 'switched-model', createdAt: 1720000000000 }, events[1], switchedWithoutHeader], sanitizeConfig({}))
+  assert.ok(Object.values(replayedSource.days)[0]['deepseek:deepseek-v4-pro'].cost > 0, '历史回放同样以最终消息的模型归因')
   // ① restore 路径(宿主 restore() 255 行,无 try-catch):真实 state 可 parse。
   usageProjectionStateSchema.parse(projState)
   // ② snapshot/drive 路径:wire.viewSchema.parse(wire.view(state)) 可执行。
@@ -2443,7 +2577,7 @@ console.log('[ok] OpenRouter/SiliconFlow/CommandCode 解析器与白名单通过
   // 服务端 bestMode 对齐;数字分叉守卫双端同步。
   assert.ok(clientSource.includes("currency: typeof v.prices?.currency === 'string'"), '客户端 parseConfig 保留 prices.currency')
   assert.ok(clientSource.includes("bestMode = modelsCat[h]?.billingMode === 'deepseek-peak' ? 'deepseek-peak' : 'flat'"), '客户端跨厂商兑底 billingMode 与服务端同口径')
-  assert.ok(clientSource.includes("if (/^\\d{1,2}$/.test(canon.slice(idx + cc.length))) continue") && clientSource.includes("if (/^\\d{1,2}$/.test(rest.replace(/^[-_./:]+/, ''))) continue"), '客户端 matchModelIdLocal 数字分叉守卫与 pricing.js 同步')
+  assert.ok(clientSource.includes('const suffix = /^(?:[-_./:@]') && clientSource.includes('suffix.test(stripped.slice(strip(c).length))'), '客户端安全后缀匹配与 pricing.js 同步')
   console.log('[ok] 手动价格映射裸 DeepSeek 名兜底(宿主+客户端双端/语义保留/下拉框根因修复)通过')
 }
 
@@ -3069,7 +3203,7 @@ console.log('[ok] OpenRouter/SiliconFlow/CommandCode 解析器与白名单通过
   assert.equal(ledger36c.todayOfficialCost(), 0, '无今日记录返回 0')
   // 源结构断言:index.js 对账改用官方渠道费用;client.js 官方分支走 todayOfficialUsd,自定义分支维持全量。
   const idxSrc36 = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-  assert.ok(idxSrc36.includes('reconcileBalanceDelta(ledger.balanceRef, balanceCache.value, ledger.todayOfficialCost()'), '对账传入官方渠道费用(issue #36)')
+  assert.ok(idxSrc36.includes('const todayCost = ledger.todayOfficialCost() + (externalCost ?? 0)'), '对账合计官方渠道与当天外部费用(issue #185)')
   assert.ok(!idxSrc36.includes('ledger.today().cost, localDayKey'), '对账不再使用全渠道今日合计')
   const cliSrc36 = readClientSource()
   assert.ok(cliSrc36.includes('function todayOfficialUsd(state)'), 'client.js 定义 todayOfficialUsd')
@@ -3578,7 +3712,7 @@ console.log('[ok] OpenRouter/SiliconFlow/CommandCode 解析器与白名单通过
   // 额度:四类来源(订阅 / Go / 网关 / 自定义余额)统一由 QuotasSection 总装,仍落在同一标签分支。
   between("el(QuotasSection, { key: 'quotas', state, api, t, draft, setDraft })", branch.quotas, branch.usage, '统一额度区(QuotasSection)在额度标签')
   // 用量:用量统计 + 按模型 + 历史 + 会话排行 + 历史数据操作。
-  between('el(ModelStatsPanel, { state, config: draft ?? config, t })', branch.usage, branch.display, '按模型统计在用量标签')
+  between('el(ModelStatsPanel, { state, config: draft ?? config, t, draft, setDraft })', branch.usage, branch.display, '按模型统计在用量标签')
   between('el(HistoryPanel, { state, api })', branch.usage, branch.display, '历史面板在用量标签')
   between('el(SessionRankPanel, { state, api })', branch.usage, branch.display, '会话排行在用量标签')
   between("t('historyDataTitle')", branch.usage, branch.display, '历史数据操作分组在用量标签')
@@ -5667,7 +5801,7 @@ await import('./typert-codecs.mjs')
   // 17-2) 同步范围消歧文案(双语)接线。
   const client85 = readClientSource()
   assert.ok(client85.includes("t('syncScopeNote')"), '设置页同步区挂「同步范围说明」')
-  assert.ok(client85.includes('仅更新 DeepSeek 官方模型价') && client85.includes('only updates DeepSeek official prices'), '消歧文案双语(说明按钮仅更新 DeepSeek 官方价)')
+  assert.ok(client85.includes('官方同步只更新 DeepSeek 价格') && client85.includes('Official sync updates DeepSeek prices'), '消歧文案双语(说明按钮仅更新 DeepSeek 官方价)')
   console.log('[ok] GLM-5.3/5.3-Flash 定价与同步范围消歧(issue #85)通过')
 }
 
@@ -5948,7 +6082,6 @@ function m_costOf85(entry, tokens) {
 {
   const client86 = readClientSource()
   assert.ok(client86.includes("t('customBalanceAllowedHosts')") && client86.includes('applyAllowedHostsText'), 'allowedHosts 输入框接线')
-  assert.ok(client86.includes("t('customBalanceHeadersVarNote')"), '请求头上方 {{VAR}} 命名规则说明')
   assert.ok(client86.includes('customVar:'), '凭据输入区以 customVar: 目标调 setCredential')
   assert.ok(client86.includes('customVarStatus'), 'parse 端解析 customVarStatus')
   assert.ok(client86.includes('placeholderVars'), '占位符变量集合驱动凭据输入行')
@@ -6562,11 +6695,18 @@ function m_costOf85(entry, tokens) {
 
 await import('./aliyun-balance.mjs')
 await import('./gateway-retry.mjs')
+await import('./cache-lifecycle.mjs')
+await import('./core-boundaries.mjs')
 await import('./go-credentials.mjs')
+await import('./balance-credentials.mjs')
 await import('./qwen-cli.mjs')
+await import('./bailian-cli.mjs')
 await import('./minimax-endpoint.mjs')
+await import('./openrouter-pricing.mjs')
 await import('./pr145-147.mjs')
 await import('./custom-balance-ui.mjs')
+await import('./custom-balance-post.mjs')
+await import('./balance-display-currency.mjs')
 await import('./settings-regressions.mjs')
 await import('./scoped-billing.mjs')
 await import('./billing-channel-peak.mjs')
@@ -6585,4 +6725,7 @@ await import('./versioned-session-logs.mjs')
 await import('./session-log-repair.mjs')
 await import('./client-issues-127-129.mjs')
 await import('./model-quota-cards.mjs')
+await import('./mimo-quota.mjs')
+await import('./mimo-enable-flow.mjs')
+await import('./mimo-v26-pricing.mjs')
 console.log('[ok] 全部验证通过')

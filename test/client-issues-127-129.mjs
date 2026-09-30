@@ -148,6 +148,23 @@ assert.ok(onlyChild.tree, '主会话无投影但子代理有费用时DockLine可
 assert.match(textOf(onlyChild.tree), /This session \$1 \(API\)/, '仅子代理场景按真实API费用展示')
 onlyChild.dispose()
 
+// #160: cache reads / (uncached input + cache reads + cache writes), before Input.
+for (const locale of ['en', 'zh']) {
+  const dockConfig = { ...config, locale }
+  for (const [tokens, expected] of [
+    [{ input: 20, cacheRead: 60, cacheWrite: 20, output: 900 }, '60.0%'],
+    [{ input: 20, cacheRead: 0, cacheWrite: 80 }, '0.0%'],
+    [{ input: 0, cacheRead: 100, cacheWrite: 0 }, '100.0%'],
+    [{ input: 0, cacheRead: 0, cacheWrite: 0, output: 10 }, '—'],
+  ]) {
+    const card = e.mount(e.ui.DockLine, { useProjection: () => ({ ...usage(0, 1), ...tokens }), useCost: pick => pick({ state: { config: dockConfig } }) })
+    const text = textOf(card.tree)
+    assert.ok(text.includes(expected))
+    assert.ok(text.indexOf(expected) < text.indexOf(locale === 'en' ? 'Input' : '输入'))
+    card.dispose()
+  }
+}
+
 // Codex 插件查询是显式选择:关闭状态不探测,开启才查询同源路由,关闭解除订阅。
 const quotaRequest = deferred()
 const quota = environment(() => quotaRequest.promise)

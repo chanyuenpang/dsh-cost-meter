@@ -10,6 +10,77 @@ permissions:
   contents: read
 
 jobs:
+  marketplace-git-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install reported DSH host and pnpm
+        shell: pwsh
+        run: |
+          npm install -g pnpm@11.21.0
+          New-Item -ItemType Directory -Path .tmp-next-host -Force | Out-Null
+          Copy-Item test/fixtures/next-host/package.json .tmp-next-host/package.json
+          npm install --prefix .tmp-next-host --no-audit --no-fund
+      - name: Install through the Plugin Hub Git URL
+        shell: pwsh
+        env:
+          TEST_REV: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-cost-meter-git-install'
+          node .tmp-next-host/node_modules/@deepseek-ai/dsh/lib/bin.js plugin --profile web add "git+https://github.com/han-1413141/dsh-cost-meter.git#$env:TEST_REV"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $config = node .tmp-next-host/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config
+          if ($LASTEXITCODE -ne 0 -or -not ($config | Select-String 'name: dsh-cost-meter')) { exit 1 }
+
+  next-host-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install pinned DSH 0.2 host
+        run: |
+          npm install -g pnpm
+          pnpm install --frozen-lockfile
+          mkdir -p .tmp-next-host
+          cp test/fixtures/next-host/package.json .tmp-next-host/package.json
+          npm install --prefix .tmp-next-host --no-audit --no-fund
+      - name: Verify compatibility, sessions and RPC on the next host
+        run: |
+          export DSH_TEST_NODE_MODULES="$PWD/.tmp-next-host/node_modules"
+          node test/host-peer-compatibility.mjs
+          node test/verify.mjs
+          node test/market-hot-install.mjs
+      - name: Install the packed plugin and start the real Web host
+        run: |
+          export DSH_TEST_NODE_MODULES="$PWD/.tmp-next-host/node_modules"
+          mkdir -p .tmp-next-package
+          npm pack --pack-destination .tmp-next-package
+          node test/next-host-install.mjs .tmp-next-package/dsh-cost-meter-*.tgz
+
+  market-hot-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install reported host and pinned RPC packages
+        run: |
+          npm install -g pnpm
+          pnpm install --frozen-lockfile
+          mkdir -p .tmp-market-host
+          cp test/fixtures/install-host/package.json .tmp-market-host/package.json
+          npm install --prefix .tmp-market-host --ignore-scripts --no-audit --no-fund
+      - name: Verify hot installation without restarting the host
+        run: |
+          export DSH_TEST_NODE_MODULES="$PWD/.tmp-market-host/node_modules"
+          node test/market-hot-install.mjs
+
   source-host-codecs:
     runs-on: ubuntu-latest
     steps:
@@ -59,7 +130,14 @@ jobs:
           node-version: 22
       - name: Install DeepSeek Harness
         shell: bash
-        run: npm install -g @deepseek-ai/dsh
+        # Pin the tested host graph: upstream ^0.1.5-rc.1 ranges currently select
+        # rc.3 packages requiring an unpublished sidebar-documentpreview@rc.3.
+        # Exercise the real host and install.ps1 without skipping any assertions.
+        run: |
+          mkdir -p .tmp-install-host
+          cp test/fixtures/install-host/package.json .tmp-install-host/package.json
+          npm install --prefix .tmp-install-host --no-audit --no-fund
+          node -e 'require("fs").appendFileSync(process.env.GITHUB_PATH, require("path").resolve(".tmp-install-host/node_modules/.bin") + "\n")'
       - name: Install pnpm (Linux leg only)
         if: runner.os == 'Linux'
         shell: bash
@@ -96,8 +174,9 @@ jobs:
       - name: Run regression suite
         shell: bash
         run: |
-          export DSH_TEST_NODE_MODULES="$(npm root -g)/@deepseek-ai/dsh/node_modules"
+          export DSH_TEST_NODE_MODULES="$PWD/.tmp-install-host/node_modules"
           node test/verify.mjs
+          node test/market-hot-install.mjs
       # 产物漂移门禁(v1.6.8):lib/client.js 是提交进仓库的压缩产物,无 prepare/prepack
       # 钩子,全靠手工构建后提交,此前实测已发生漂移。此处重新构建并比对,任何未提交
       # 的产物差异都会让 CI 变红,杜绝把过期 bundle 发布出去。

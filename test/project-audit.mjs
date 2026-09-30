@@ -3,6 +3,7 @@ import vm from 'node:vm'
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { fetchWithRetry, readJsonBounded, looksLikeSecretHeaderValue } from '../lib/net.js'
 import { queryCustomBalance } from '../lib/custom-balance.js'
 import { cpaManagementFetch } from '../lib/gateway-quotas.js'
@@ -25,6 +26,12 @@ await assert.rejects(() => cpaManagementFetch('https://example.test/v0/managemen
 assert.equal(cancelled, true, '网关也执行真正的流式上限')
 await assert.rejects(() => readJsonBounded(new Response('{"secret":"synthetic-secret" BROKEN')), e => !e.message.includes('synthetic-secret'))
 assert.deepEqual(await readJsonBounded(new Response('{"balance":12.5}')), { balance: 12.5 })
+// 裸 gzip 正文(无 Content-Encoding/Content-Type)按 gzip 魔数解压后解析(issue #172):
+// 对应个别 CDN 边缘返回的无编码头压缩响应;伪魔数正文仍报不回显正文的解析错误,
+// 解压膨胀超出读取上限报 RESPONSE_TOO_LARGE,压缩体不能绕过 256KiB 约束。
+assert.deepEqual(await readJsonBounded(new Response(gzipSync(Buffer.from('{"balance":12.5}')))), { balance: 12.5 })
+await assert.rejects(() => readJsonBounded(new Response(Buffer.from([0x1f, 0x8b, 0x01, 0x02]))), e => e.message === 'response body is not valid JSON')
+await assert.rejects(() => readJsonBounded(new Response(gzipSync(Buffer.from('{"d":"' + 'x'.repeat(300000) + '"}')))), e => e.code === 'RESPONSE_TOO_LARGE')
 
 const originalFetch = globalThis.fetch
 const config = { customBalance: { enabled: true, request: { url: 'https://example.test/balance' }, extract: { remaining: 'balance', maxBudget: 'cap', spend: 'spend' } } }

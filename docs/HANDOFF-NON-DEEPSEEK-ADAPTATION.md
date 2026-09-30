@@ -201,7 +201,7 @@ node test/verify.mjs
 尚未接入（无 API-Key 化的公开用量端点，只能控制台/CLI 查询，实测候选端点均 404）：
 
 - Moonshot Kimi Code（用量仅在 kimi.com 控制台与 CLI `/usage`，会话态鉴权）；
-- 阿里云百炼 Coding Plan（`sk-sp-` Key 无公开用量端点，仅控制台 Coding Plan 页）；
+- 阿里云百炼 Coding Plan（`sk-sp-` Key 无公开用量端点，仅控制台 Coding Plan 页；后续已经官方百炼 CLI `bl usage coding-plan` 接入，见 docs/qwen-cli-quota.md）；
 - OpenAI Codex（无官方额度 API，backend-api 非官方且有 ToS 风险）；
 - Google Gemini Code Assist（cloudquotas 需 OAuth + 项目 ID，接入成本过高）；
 - GitHub Copilot（需 OAuth device flow，复杂度高）。

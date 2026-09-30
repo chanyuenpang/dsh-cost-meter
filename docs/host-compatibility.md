@@ -1,5 +1,20 @@
 # 当前宿主兼容验证
 
+## DSH 0.2.0-rc.1（2026-09-28）
+
+插件版本：1.7.44。本地环境：Windows、Node.js 24.19.0；CI 新增 Ubuntu / Node.js 24 的同版本宿主验证。
+
+- 安装官方 `@deepseek-ai/dsh@0.2.0-rc.1`，使用隔离 `DSH_HOME`，通过真实 `dsh plugin --profile web add <tgz>` 安装当前打包产物；无需版本豁免。配置图包含 `dsh-cost-meter`。
+- Web 启动后，探针确认两个宿主 peer 都复用宿主实际模块。三次合成调用（主会话、子会话、无会话）入账，输入合计 300 tokens；SCNet 快照显示 40.6%，损坏文件回退且不改变日统计。
+- 完整回归及费用 RPC 的冷启动、热加载、延迟注册和卸载通过。真实会话恢复、fork 计费及普通/压缩 v4 日志修复通过；测试保留旧宿主 v3 支持。
+- 真实兼容检查以旧范围作为失败对照，确认原声明会拒绝安装并跳过启动 bundle；修改后正常加载。范围仍排除 `0.2.0-rc.0`、更早的 0.2 alpha 和 0.3。
+
+复现：按 `test/fixtures/next-host/package.json` 安装宿主，把 `DSH_TEST_NODE_MODULES` 指向其 `node_modules`，运行 `test/host-peer-compatibility.mjs`、`test/verify.mjs`、`test/market-hot-install.mjs`；执行 `npm pack` 后，将 tarball 路径传给 `node test/next-host-install.mjs <tgz>`。具体 CI 步骤见 `.github/workflows/install-smoke.yml`。
+
+测试进程移除继承的 API 凭据，合成数据只写入临时 Profile，没有发起真实模型请求。本次未验证 Desktop 外壳、0.2 宿主卸载、其他第三方服务的在线账单或未发布的 0.2 稳定版本。`0.2.0` / `0.2.1` 仅用于版本范围边界断言；精确 `compatible` 记录只新增实测的 `0.2.0-rc.1`。
+
+## 历史验证：DSH 0.1（2026-09-09）
+
 插件版本：1.7.17。验证日期：2026-09-09。环境：Windows、Node.js 24.19.0。
 
 | 官方 DSH 版本 | 安装方式 | Web 启动 | 宿主模块复用 | 隔离服务合成计费 | SCNet 快照/坏文件回退 | 卸载后保留账本 |

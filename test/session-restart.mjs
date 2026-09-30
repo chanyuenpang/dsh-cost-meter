@@ -61,7 +61,8 @@ if (hostModules) {
   const appendCall = (session, turn, input) => session.append('assistant/chunk', usageData(turn, input))
   const restart = session => Session.fromRestore(session.header.id, structuredClone(session.snapshotEvents()), structuredClone(session.header), session.inheritedEventCount, 'owned')
 
-  const hostHeader = { ...header, createdAt: Date.now() - 60000 }
+  // Let the installed host choose its storage generation (0.1: v3; 0.2: v4).
+  const hostHeader = { ...Session.create(header.id).header, createdAt: Date.now() - 60000 }
   const live = Session.create(header.id, undefined, hostHeader, 0)
   live.append('request/header', request(0).data)
   appendCall(live, 1, 100)
@@ -81,7 +82,7 @@ if (hostModules) {
   appendCall(resumedAgain, 3, 300)
   assert.equal(readInput(restore(resumedAgain, restored.checkpoint)), 600, '真实宿主第二次重启保留全部调用')
 
-  const child = Session.create('fork', resumedAgain.snapshotEvents(), { ...forkHeader, createdAt: hostHeader.createdAt }, resumedAgain.seq)
+  const child = Session.create('fork', resumedAgain.snapshotEvents(), { ...hostHeader, id: 'fork', isSeeded: true, parentSession: header.id }, resumedAgain.seq)
   assert.equal(child.snapshotEvents().at(-1).data.inherited, true, '真实 fork 边界有 inherited 标记')
   appendCall(child, 4, 400)
   const childCheckpoint = restore(child).checkpoint

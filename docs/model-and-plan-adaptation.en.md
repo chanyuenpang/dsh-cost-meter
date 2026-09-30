@@ -20,19 +20,15 @@ Supported billing buckets: `input` / `cacheMiss`, `cachedInput` / `cacheHit` / `
 
 ### 1.2 Automatic model-name matching
 
-Unknown model ids are resolved in this order:
+Manual overrides (`priceOverrides`) take priority. Automatic matching accepts exact names, normalized equivalents, and date, version or context-length suffixes. Distinct models and variants remain unpriced until added to the table or assigned manually.
 
-```
-exact match → manual override (priceOverrides) → normalized-equal → containing match → strip date/version suffix → prefix (longest) → family-token similarity (≥2 leading tokens)
-```
-
-Normalization: lowercased; case / spaces / hyphens / underscores / dots are ignored, and bracketed annotations (e.g. `(go)`) are dropped. Containing match: a hit when the normalized request name **contains** a table model name (longest candidate wins; overly short candidates are skipped to prevent mis-matches). Router providers (opencode / zen etc., not registered in the price table) trigger a cross-vendor search over the whole catalog, with DeepSeek models keeping their peak/off-peak tiers.
+Normalization lowercases names, ignores spaces, hyphens, underscores and dots, and drops bracketed annotations such as `(go)`. Router providers (opencode, zen and other unregistered channels) can search across vendors by the complete model name. DeepSeek models retain their peak/off-peak tiers.
 
 Examples:
 
 | Model id in the request | Match result |
 |---|---|
-| `gpt5.6 luna(go)` | `gpt-5.6-luna` (containing match) |
+| `gpt5.6 luna(go)` | `gpt-5.6-luna` (normalized-equal) |
 | `DeepSeek V4 Flash` | `deepseek-v4-flash` (normalized-equal) |
 | `deepseek-v4-flash-2026-08-01` | `deepseek-v4-flash` (date suffix stripped) |
 | `deepseek-chat` and other legacy aliases | never guessed; falls back to the DeepSeek default price |
@@ -56,10 +52,10 @@ The built-in read-only catalog is grouped by **vendor → model family**, coveri
 | Alibaba Qwen | Qwen3.8 Max, 3.7, 3.6, 3.5 Plus |
 | Kimi / Moonshot | K3, K2.7 Code, K2.6, K2.5 |
 | MiniMax | M3, M2.7, M2.5 |
-| Xiaomi MiMo | V2.5 (+Pro) |
+| Xiaomi MiMo | V2.6 (Pro / Flash / Pro UltraSpeed), V2.5 (+Pro, officially marked as retiring soon) |
 | Tencent Hunyuan | Hy3 |
 | OpenRouter / Mistral / NVIDIA / Upstage | common models |
-| **OpenCode Go (subscription)** | official reference prices for the **17 non-DeepSeek models** included in the subscription (DeepSeek V4 Flash/Pro follow the official main table and are not duplicated) |
+| **OpenCode Go (subscription)** | official reference prices for the non-DeepSeek models included in the subscription (DeepSeek V4 Flash/Pro follow the official main table and are not duplicated) |
 
 Price sources: cross-checked against the **OpenCode Zen/Go official price list** (officially stated as cost-pass-through, identical to each vendor's own prices) and each vendor's official pricing pages; entries without a verifiable price (e.g. GLM-5.3) are marked `unpriced` — **prices are never invented**. A machine-readable copy is [`provider-pricing.json`](./provider-pricing.json) (auto-generated from code).
 
@@ -98,7 +94,7 @@ Without credentials/subscription the panel shows a **neutral soft-failure hint**
 
 | Vendor / product | Reason |
 |---|---|
-| Alibaba Bailian Coding Plan | no public API-key usage endpoint yet (console only) |
+| Alibaba Bailian Coding Plan | no public API-key endpoint; integrated via the official Bailian CLI (`bl usage coding-plan`) as the third Qwen quota source — see docs/qwen-cli-quota.md |
 | OpenAI Codex | usage is only tied to ChatGPT sessions; no standalone API-key endpoint |
 | Gemini Code Assist | organization-level Cloud API only; no personal-key endpoint |
 | GitHub Copilot (individual) | usage endpoints require the OAuth device flow, not supported yet |

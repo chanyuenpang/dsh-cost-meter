@@ -8,6 +8,29 @@
         el('p', { className: 'cm-card-sub' }, props.sub))
     }
 
+    function ExternalUsagePanel({ state, t }) {
+      const ext = state.externalUsage
+      if (!ext) return null
+      const config = state.config
+      const amount = day => formatMoneyUsd(displayCostOf(day, config), config)
+      const usage = day => t('callsTokens', { calls: day.calls, input: formatTokens(day.input), cache: formatTokens(day.cacheRead + day.cacheWrite), output: formatTokens(day.output) })
+      const sum = (a, b) => ({ calls: a.calls + b.calls, input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: displayCostOf(a, config) + b.cost, apiCost: displayCostOf(a, config) + b.cost })
+      const row = (label, day) => el('tr', { key: label }, el('td', null, label), el('td', { className: 'num' }, String(day.calls)), el('td', { className: 'num' }, formatTokens(day.input)), el('td', { className: 'num' }, formatTokens(day.cacheRead + day.cacheWrite)), el('td', { className: 'num' }, formatTokens(day.output)), el('td', { className: 'num' }, amount(day)))
+      const table = rows => el('div', { className: 'cm-scroll' }, el('table', { className: 'cm-table' }, el('thead', null, el('tr', null, el('th', null, t('colDate')), ...['colCalls', 'colInTok', 'colCacheTok', 'colOutTok', 'colCost'].map(k => el('th', { className: 'num' }, t(k))))), el('tbody', null, rows)))
+      return el('section', { className: 'cm-budget' },
+        el('h3', { className: 'cm-h' }, t('externalUsage')),
+        ext.stale ? el('p', { className: 'cm-note' }, t('externalStale')) : null,
+        el('div', { className: 'cm-cards' }, ['today', 'month', 'total'].map((key, i) => {
+          const combined = sum(state[key], ext.combined[key])
+          return el(Card, { key, title: t('combinedUsage') + ' · ' + t(['cardToday', 'cardMonth', 'cardTotal'][i]), value: amount(combined), sub: usage(combined) })
+        })),
+        ...ext.sources.map(source => el('details', { key: source.source },
+          el('summary', null, source.source + ' · ' + t('cardToday') + ' ' + amount(source.today) + ' · ' + t('cardMonth') + ' ' + amount(source.month) + ' · ' + usage(source.today)),
+          table(['today', 'month', 'total'].map((key, i) => row(t(['cardToday', 'cardMonth', 'cardTotal'][i]), source[key]))),
+          el('p', { className: 'cm-note' }, t('externalHistory')),
+          table(source.history.map(day => row(day.date, day))))))
+    }
+
     /** 折叠面板标题行:三角箭头 + 标题,aria-expanded 随 open 翻转(配合 .cm-collapse-h / .cm-caret 样式)。 */
     const collapseHeader = (open, onClick, title) => el('button', { type: 'button', className: 'cm-collapse-h', 'aria-expanded': String(open), onClick }, el('span', { className: 'cm-caret' + (open ? ' open' : '') }), el('h3', { className: 'cm-h' }, title))
 
@@ -325,8 +348,9 @@
         }
         const windows = previewConfig.peakWindows ?? []
         // 周末全谷价新规:处于周末区间时状态行显示「周末时段——全谷价」(与时段条一致)。
-        const view = peakPhaseAt(now, windows)
+        const view = peakPhaseAt(now, windows, previewConfig.peakHolidays)
         if (view === null) return t('offPeakActive')
+        if (view.holiday === true) return t('holidayAllOffPeak')
         if (view.weekend === true) return t('weekendAllOffPeak')
         return view.inPeak ? t('peakActive') : t('offPeakActive')
       })()
@@ -430,6 +454,10 @@
             ? peakNoticeEl(state, previewConfig, t)
             : el('p', { className: 'cm-hint' }, t('peakNoticeHiddenHint'))),
         el('p', { className: 'cm-hint' }, peakText),
+        el('div', { className: 'cm-field' },
+          el('label', null, t('peakHolidaysLabel')),
+          el('input', { className: 'cm-input', defaultValue: (previewConfig.peakHolidays ?? []).join(', '),
+            onBlur: event => setField('peakHolidays', event.target.value.split(/[,，\s]+/).filter(Boolean)) })),
         el('p', { className: 'cm-hint' }, t('weekendRuleNote')))
     }
 
@@ -567,6 +595,7 @@
       entry = priceAt(entry)
       if (entry === null || typeof entry !== 'object') return ''
       if (entry.unpriced === true) return t('catalogUnpriced')
+      if (currency === 'CNY' && entry.cny) entry = entry.cny
       const usd = n => (currency === 'CNY' ? '¥' : '$') + String(n)
       const pk = entry.peak !== null && typeof entry.peak === 'object' ? entry.peak : null
       if (pk !== null) return usd(entry.cacheMiss) + '/' + usd(pk.cacheMiss) + ' in · ' + usd(entry.output) + '/' + usd(pk.output) + ' out'
@@ -654,7 +683,7 @@
         }
         return el('div', { key: modelId, className: 'cm-catalog-row' },
           el('span', { className: 'cm-catalog-id' }, modelId),
-          el('span', { className: 'cm-catalog-price' }, catalogPriceText(entry, t, provider === 'deepseek' ? prices.currency : 'USD')),
+          el('span', { className: 'cm-catalog-price' }, catalogPriceText(entry, t, provider === 'deepseek' || entry?.cny ? prices.currency : 'USD')),
           mounted ? el('span', { className: 'cm-catalog-tag' }, t('mountedTag')) : null,
           directToggle,
           el('button', { className: 'cm-btn small', disabled: !mounted && entry?.unpriced === true, onClick: () => (mounted ? unmount(provider, modelId) : mount(provider, modelId, entry)) },
@@ -767,7 +796,7 @@
     }
 
     function ModelStatsPanel(props) {
-      const { state, config, t, initialTab } = props
+      const { state, config, t, initialTab, draft, setDraft } = props
       const [tab, setTab] = useState(initialTab === 'history' ? 'history' : 'today')
       // 默认收起,保持设置页简洁;需要时点三角展开。
       const [open, setOpen] = useState(false)
@@ -784,8 +813,19 @@
       const classChip = r => r.cls === 'plan'
         ? el('span', { className: 'cm-plan-tag', title: t('billingClassLabel') }, t('billingClassPlan'))
         : null
+      const classSelect = r => el('select', { className: 'cm-input', title: t('billingClassLabel'),
+        value: config.planBilling?.models?.[r.key] ?? 'auto', disabled: draft === null,
+        onChange: event => {
+          const models = { ...(draft.planBilling?.models ?? {}) }
+          if (event.target.value === 'auto') delete models[r.key]
+          else models[r.key] = event.target.value
+          setDraft({ ...draft, planBilling: { ...draft.planBilling, models } })
+        } },
+        el('option', { value: 'auto' }, t('billingClassAuto')),
+        el('option', { value: 'plan' }, t('billingClassPlan')),
+        el('option', { value: 'api' }, t('billingClassApi')))
       const barRow = (name, frac, barClass, valueText, tagNode) => el('div', { className: 'cm-mstats-row' },
-        el('span', { className: 'cm-mstats-name' }, name, tagNode ?? null),
+        el('span', { className: 'cm-mstats-name', title: name }, name, tagNode ?? null),
         el('div', { className: 'cm-mstats-barbg' },
           el('div', { className: 'cm-mstats-bar ' + barClass, style: { width: pct(frac) } })),
         el('span', { className: 'cm-mstats-val' }, valueText))
@@ -805,6 +845,7 @@
               barRow(r.label, maxCost > 0 ? r.cost / maxCost : 0, 'cost', formatMoneyUsd(r.cost, config),
                 el(Fragment, null,
                   classChip(r),
+                  classSelect(r),
                   r.cacheUnreported ? el('span', { className: 'cm-plan-tag', title: t('modelStatsHitUnreportedTip') }, '⚠') : null)))),
             // 2) Token 消耗(堆叠:输入/缓存/输出)。
             el('div', { className: 'cm-mstats-h' }, t('modelStatsTokensH')),
@@ -813,7 +854,7 @@
               el('span', null, el('span', { className: 'cm-mstats-dot', style: { background: '#ff9800' } }), t('modelStatsCache')),
               el('span', null, el('span', { className: 'cm-mstats-dot', style: { background: '#34a853' } }), t('modelStatsOutput'))),
             [...rows].sort((a, b) => b.tokens - a.tokens).map(r => el('div', { className: 'cm-mstats-row', key: 't:' + r.label },
-              el('span', { className: 'cm-mstats-name' }, r.label),
+              el('span', { className: 'cm-mstats-name', title: r.label }, r.label),
               el('div', { className: 'cm-mstats-barbg' },
                 el('div', { className: 'cm-mstats-seg in', style: { width: pct(maxTokens > 0 ? r.input / maxTokens : 0) } }),
                 el('div', { className: 'cm-mstats-seg cache', style: { width: pct(maxTokens > 0 ? (r.cacheRead + r.cacheWrite) / maxTokens : 0) } }),
@@ -1015,6 +1056,13 @@
         models[modelId] = { ...(models[modelId] ?? {}), [field]: Math.max(0, value) }
         writeModels(models)
       }
+      const setCny = (field, value) => {
+        if (draft === null) return
+        const models = { ...((draft.prices.providers ?? {})[provider]?.models ?? {}) }
+        const current = models[modelId] ?? {}
+        models[modelId] = { ...current, cny: { ...current.cny, [field]: Math.max(0, value) } }
+        writeModels(models)
+      }
       const remove = () => {
         if (draft === null) return
         const models = { ...((draft.prices.providers ?? {})[provider]?.models ?? {}) }
@@ -1038,7 +1086,12 @@
               // 第三方三桶为必填计价结构:清空不提交(保留原值),避免误清成 0 价免费。
               numInput({ value: entry?.input ?? null, emptyMode: 'ignore' }, v => setNum('input', v)),
               numInput({ value: entry?.cachedInput ?? null, emptyMode: 'ignore' }, v => setNum('cachedInput', v)),
-              numInput({ value: entry?.output ?? null, emptyMode: 'ignore' }, v => setNum('output', v)))))
+              numInput({ value: entry?.output ?? null, emptyMode: 'ignore' }, v => setNum('output', v))),
+            entry?.cny ? el('div', { className: 'cm-price-row' },
+              el('span', null, 'CNY'),
+              numInput({ value: entry.cny.cacheMiss, emptyMode: 'ignore' }, v => setCny('cacheMiss', v)),
+              numInput({ value: entry.cny.cacheHit, emptyMode: 'ignore' }, v => setCny('cacheHit', v)),
+              numInput({ value: entry.cny.output, emptyMode: 'ignore' }, v => setCny('output', v))) : null))
     }
 
     // ── 余额面板(设置页,按 balance.display 配置挂载) ────────────────────────
@@ -1052,8 +1105,7 @@
     const cmMsg = m => (m != null ? el('div', { className: 'cm-msg ' + m.kind }, m.text) : null)
     function BalancePanel(props) {
       const { state, api, t, draft, setDraft } = props
-      const [busy, setBusy] = useState(false)
-      const [msg, setMsg] = useState(null)
+      const [busy, msg, doRefresh] = useQuotaRefresh(t, () => api.refreshBalance())
       const balance = state.balance
       const config = state.config
       // 余额差对账(issue #18):drift 时在面板内展示警告行,开关随草稿保存。
@@ -1062,19 +1114,6 @@
       const toggleReconcile = event => {
         if (draft === null || typeof setDraft !== 'function') return
         setDraft({ ...draft, balance: { ...(draft.balance ?? config.balance ?? {}), reconcile: event.target.checked } })
-      }
-      const doRefresh = async () => {
-        if (busy) return
-        setBusy(true)
-        setMsg(null)
-        try {
-          const result = await api.refreshBalance()
-          setMsg({ kind: result.ok ? 'ok' : 'err', text: result.message })
-        } catch (error) {
-          setMsg({ kind: 'err', text: t('balanceRefreshFailed', { message: error?.message ?? String(error) }) })
-        } finally {
-          setBusy(false)
-        }
       }
       const money = value => formatBalanceMoney(value, config, balance?.currency)
       const body = balance.status === 'ok'
@@ -1093,6 +1132,9 @@
           el('h3', { className: 'cm-h' }, t('accountBalance')),
           el('button', { className: 'cm-btn small', onClick: doRefresh, disabled: busy }, busy ? t('refreshing') : t('refreshBalance'))),
         body,
+        el('label', null, t('balanceApiKey')),
+        el(CredentialField, { target: 'balance', configured: balance.keyConfigured, source: balance.keySource, t, api, placeholder: 'sk-…' }),
+        el('p', { className: 'cm-hint' }, t('balanceKeyHint')),
         reconcile !== undefined && reconcile.ok === false ? el('div', { className: 'cm-bal-line warn' }, '⚠ ' + reconcile.message) : null,
         el('label', { className: 'cm-check' },
           el('input', { type: 'checkbox', checked: reconcileOn, onChange: toggleReconcile }),
@@ -1178,10 +1220,14 @@
       const { state, api, t, entry, index, canRemove, onPatch, onRemove } = props
       const aliyun = entry.adapter === 'aliyun'
       const [open, setOpen] = useState(false)
-      const [headersText, setHeadersText] = useState(() => JSON.stringify(entry.request?.headers ?? {}, null, 2))
-      const [extractText, setExtractText] = useState(() => JSON.stringify(entry.extract ?? {}, null, 2))
+      const readJsonText = () => ({
+        headers: JSON.stringify(entry.request?.headers ?? {}, null, 2),
+        extract: JSON.stringify(entry.extract ?? {}, null, 2),
+        body: typeof entry.request?.body === 'string' ? entry.request.body : JSON.stringify(entry.request?.body, null, 2) ?? '',
+      })
+      const [jsonText, setJsonText] = useState(readJsonText)
       const [allowedHostsText, setAllowedHostsText] = useState(() => (entry.allowedHosts ?? []).join(', '))
-      const [jsonErr, setJsonErr] = useState({ headers: '', extract: '' })
+      const [jsonErr, setJsonErr] = useState({})
       const openRef = useRef(false)
       const config = state.config
       const snapshots = Array.isArray(state.customBalances) ? state.customBalances : []
@@ -1190,10 +1236,9 @@
       const toggleOpen = () => { setOpen(v => !v) }
       useEffect(() => {
         if (open && !openRef.current) {
-          setHeadersText(JSON.stringify(entry.request?.headers ?? {}, null, 2))
-          setExtractText(JSON.stringify(entry.extract ?? {}, null, 2))
+          setJsonText(readJsonText())
           setAllowedHostsText((entry.allowedHosts ?? []).join(', '))
-          setJsonErr({ headers: '', extract: '' })
+          setJsonErr({})
         }
         openRef.current = open
       }, [open])
@@ -1202,47 +1247,35 @@
       // 请求头里出现的全部 {{VAR}} 占位符名(去重保序):驱动凭据输入区。
       const placeholderVars = (() => {
         if (aliyun) return ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_SECURITY_TOKEN']
-        const seen = new Set()
-        const out = []
-        for (const value of Object.values(entry.request?.headers ?? {})) {
-          if (typeof value !== 'string') continue
-          for (const match of value.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)) {
-            if (seen.has(match[1])) continue
-            seen.add(match[1])
-            out.push(match[1])
-          }
-        }
-        return out
+        return [...new Set(Object.values(entry.request?.headers ?? {}).flatMap(value =>
+          typeof value === 'string' ? [...value.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)].map(match => match[1]) : []))]
       })()
-      const applyHeadersText = text => {
-        setHeadersText(text)
+      const applyJsonText = (field, text) => {
+        setJsonText(prev => ({ ...prev, [field]: text }))
         try {
-          const parsed = JSON.parse(text)
-          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
-          if (Object.values(parsed).some(value => typeof value !== 'string')) throw new Error('invalid') // 值必须是字符串(与服务端 strict 校验同口径)
-          setJsonErr(err => ({ ...err, headers: '' }))
-          setRequest('headers', parsed)
+          const body = field === 'body'
+          const parsed = body && !text.trim() ? undefined : JSON.parse(text)
+          if (!body && (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))) throw new Error('invalid')
+          if (field === 'headers' && Object.values(parsed).some(value => typeof value !== 'string')) throw new Error('invalid')
+          setJsonErr(err => ({ ...err, [field]: '' }))
+          // 请求体保留 JSON 原文，避免大整数、重复键或 JSON 字符串被重新编码。
+          if (field === 'extract') setField(field, parsed)
+          else setRequest(field, body ? (parsed === undefined ? undefined : text) : parsed)
         } catch {
-          setJsonErr(err => ({ ...err, headers: t('customBalanceInvalidJson') }))
+          setJsonErr(err => ({ ...err, [field]: t('customBalanceInvalidJson') }))
         }
       }
+      const jsonField = (field, label, rows, hint) => !aliyun && el('div', { className: 'cm-field', style: { gridColumn: '1 / -1' } },
+        el('label', null, t(label)),
+        hint && el('span', { className: 'cm-hint' }, t(hint)),
+        el('textarea', { className: 'cm-input', rows, value: jsonText[field], onChange: event => applyJsonText(field, event.target.value) }),
+        jsonErr[field] ? el('span', { className: 'cm-hint err' }, jsonErr[field]) : null)
       // 白名单文本 → 字符串数组:逗号/空白分隔,逐项 trim,空项丢弃;空数组不落字段
       // (与服务端 sanitizeCustomEntry「hosts.length>0 才带 allowedHosts」口径一致)。
       const applyAllowedHostsText = text => {
         setAllowedHostsText(text)
         const hosts = text.split(/[\s,;]+/).map(h => h.trim()).filter(h => h.length > 0)
         setField('allowedHosts', hosts)
-      }
-      const applyExtractText = text => {
-        setExtractText(text)
-        try {
-          const parsed = JSON.parse(text)
-          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
-          setJsonErr(err => ({ ...err, extract: '' }))
-          setField('extract', parsed)
-        } catch {
-          setJsonErr(err => ({ ...err, extract: t('customBalanceInvalidJson') }))
-        }
       }
       const [busy, msg, doRefresh] = useQuotaRefresh(t, () => {
         // 门控用服务端已保存配置(而非草稿):避免刚勾选启用未过防抖保存时点刷新被服务端拒绝。
@@ -1264,21 +1297,20 @@
           : el('div', { className: 'cm-bal-line' }, custom?.message || t('balanceNotQueried'))
       const configFields = el(Fragment, null,
           el('p', { className: 'cm-note' }, t(aliyun ? 'aliyunBalanceNote' : 'customBalanceConfigNote')),
+          el('label', { className: 'cm-check' },
+            el('input', { type: 'checkbox', checked: entry.convertToDisplayCurrency === true,
+              disabled: customBalanceUnitOf(config, custom, entry) !== 'USD',
+              onChange: event => setField('convertToDisplayCurrency', event.target.checked) }),
+            t('customBalanceConvert')),
+          el('p', { className: 'cm-note' }, t('customBalanceConvertNote')),
           el('div', { className: 'cm-grid' },
-            el('div', { className: 'cm-field' },
-              el('label', null, t('customBalanceLabelZh')),
+            [['label', 'customBalanceLabelZh'], ['labelEn', 'customBalanceLabelEn']].map(([field, label]) => el('div', { key: field, className: 'cm-field' },
+              el('label', null, t(label)),
               el('input', {
                 className: 'cm-input',
-                value: entry.label ?? '',
-                onChange: event => setField('label', event.target.value),
-              })),
-            el('div', { className: 'cm-field' },
-              el('label', null, t('customBalanceLabelEn')),
-              el('input', {
-                className: 'cm-input',
-                value: entry.labelEn ?? '',
-                onChange: event => setField('labelEn', event.target.value),
-              })),
+                value: entry[field] ?? '',
+                onChange: event => setField(field, event.target.value),
+              }))),
             !aliyun && el('div', { className: 'cm-field' },
               el('label', null, t('customBalanceUnitLabel')),
               el('select', {
@@ -1318,16 +1350,8 @@
                 placeholder: 'https://example.com/key/info',
                 onChange: event => setRequest('url', event.target.value),
               })),
-            !aliyun && el('div', { className: 'cm-field', style: { gridColumn: '1 / -1' } },
-              el('label', null, t('customBalanceHeaders')),
-              el('span', { className: 'cm-hint' }, t('customBalanceHeadersVarNote')),
-              el('textarea', {
-                className: 'cm-input',
-                rows: 5,
-                value: headersText,
-                onChange: event => applyHeadersText(event.target.value),
-              }),
-              jsonErr.headers ? el('span', { className: 'cm-hint err' }, jsonErr.headers) : null),
+            jsonField('headers', 'customBalanceHeaders', 5, 'customBalanceHeadersVarNote'),
+            !['GET', 'HEAD'].includes((entry.request?.method ?? 'GET').toUpperCase()) && jsonField('body', 'customBalanceBody', 5, 'customBalanceBodyNote'),
             // 凭据输入(v1.7.6,issue #86):请求头里每个 {{VAR}} 占位符一行 write-only 输入,
             // 与 goQuota/codingPlans 的 CredentialField 同款(值走 setCredential,永不回显);
             // 头里还没有占位符时给一行提示,引导改用占位符而非明文。
@@ -1356,15 +1380,7 @@
                 onChange: event => applyAllowedHostsText(event.target.value),
               }),
               el('span', { className: 'cm-hint' }, t('customBalanceAllowedHostsHint'))),
-            !aliyun && el('div', { className: 'cm-field', style: { gridColumn: '1 / -1' } },
-              el('label', null, t('customBalanceExtract')),
-              el('textarea', {
-                className: 'cm-input',
-                rows: 8,
-                value: extractText,
-                onChange: event => applyExtractText(event.target.value),
-              }),
-              jsonErr.extract ? el('span', { className: 'cm-hint err' }, jsonErr.extract) : null)))
+            jsonField('extract', 'customBalanceExtract', 8)))
       return el(QuotaCard, {
         name: `#${index + 1} · ` + (resolveCustomBalanceLabel(entry, resolveLocale(config?.locale)) || t('customBalanceTitle')),
         enabled, saved: JSON.stringify(entry) === JSON.stringify(config.customBalances?.[index]) ? config.customBalances[index] : null, busy, open, statusNode: preview, configNode: configFields, errorMsg: msg,
@@ -1493,9 +1509,10 @@
       { id: 'scnet', labelKey: 'codingPlanScnet' },
       { id: 'volcengine', labelKey: 'codingPlanVolcengine' },
       { id: 'qwen', labelKey: 'codingPlanQwen' },
+      { id: 'mimo', labelKey: 'codingPlanMimo' },
     ]
 
-    /** 单个 Coding Plan 订阅卡片(10 家共用:开关在标题行,展示/间隔/计划额度/凭据收在展开区)。 */
+    /** 单个 Coding Plan 订阅卡片(11 家共用:开关在标题行,展示/间隔/计划额度/凭据收在展开区)。 */
     function PlanQuotaCard(props) {
       const { state, api, t, draft, setDraft, planId, labelKey } = props
       const config = state.config
@@ -1577,8 +1594,9 @@
           el('label', null, t('qwenSource')),
           el('select', { className: 'cm-input', value: cfgEntry.quotaSource ?? 'local', onChange: e => setPlan('quotaSource', e.target.value) },
             el('option', { value: 'local' }, t('qwenSourceLocal')),
-            el('option', { value: 'cli' }, t('qwenSourceCli'))),
-          el('p', { className: 'cm-note' }, t('qwenCliNote'))) : null,
+            el('option', { value: 'cli' }, t('qwenSourceCli')),
+            el('option', { value: 'bailian' }, t('qwenSourceBailian'))),
+          el('p', { className: 'cm-note' }, t(cfgEntry.quotaSource === 'bailian' ? 'qwenBailianNote' : 'qwenCliNote'))) : null,
         el('div', { className: 'cm-field' },
           el('label', null, t('codingPlanDisplayLabel')),
           el('select', {
@@ -1593,12 +1611,12 @@
           el('span', { className: 'cm-hint' }, t('codingPlanDisplayNote'))),
         // 刷新间隔(issue #33):进程内缓存过期分钟数,1-1440,保存后生效;
         // 本地估算无缓存间隔；千问 CLI 使用可配置的查询间隔。
-        planId !== 'scnet' && (planId !== 'qwen' || cfgEntry.quotaSource === 'cli') ? el('div', { className: 'cm-field' },
+        planId !== 'scnet' && (planId !== 'qwen' || (cfgEntry.quotaSource ?? 'local') !== 'local') ? el('div', { className: 'cm-field' },
           el('label', null, t('codingPlanRefreshIntervalLabel')),
           numInput({ value: typeof cfgEntry.refreshMinutes === 'number' && Number.isFinite(cfgEntry.refreshMinutes) && cfgEntry.refreshMinutes > 0 ? cfgEntry.refreshMinutes : 15 }, v => {
             setPlan('refreshMinutes', Math.min(1440, Math.max(1, Math.floor(v))))
           })) : null,
-        planId === 'scnet' || (planId === 'qwen' && cfgEntry.quotaSource !== 'cli')
+        planId === 'scnet' || (planId === 'qwen' && (cfgEntry.quotaSource ?? 'local') === 'local')
           ? el(Fragment, null,
             el('div', { className: 'cm-field' },
               el('label', null, t(planId === 'qwen' ? 'qwenPlanCreditsLabel' : 'scnetPlanCreditsLabel')),
@@ -1674,13 +1692,13 @@
               el('p', { className: 'cm-note' }, t('volcengineNote')))
             : el(Fragment, null,
               el('div', { className: 'cm-field' },
-                el('label', null, t('codingPlanKeyLabel'))),
+                el('label', null, planId === 'mimo' ? 'Cookie (platform.xiaomimimo.com)' : t('codingPlanKeyLabel'))),
               el(CredentialField, {
                 target: 'codingPlans.' + planId,
                 configured: live.keyConfigured === true,
                 source: live.keySource,
                 t, api,
-                placeholder: 'sk-…',
+                placeholder: planId === 'mimo' ? 'api-platform_serviceToken=…; userId=…' : 'sk-…',
               })))
       return el(QuotaCard, {
         name: t(labelKey), enabled, saved: config.codingPlans?.[planId], busy, open, errorMsg: msg,
@@ -1935,7 +1953,7 @@
       }, [draft, api])
 
       useEffect(() => {
-        if (costStore?.status === 'error' && costStore.error) setMessage({ kind: 'err', text: t('ledgerReadFailed', { message: costStore.error }) })
+        if (state !== null && costStore?.status === 'error' && costStore.error) setMessage({ kind: 'err', text: t('ledgerReadFailed', { message: costStore.error }) })
       }, [costStore?.status, costStore?.error])
 
       // 语言跟随当前草稿(切换语言立即生效),草稿为空时用已保存配置。
@@ -1944,7 +1962,9 @@
 
       if (costStore === undefined || state === null) {
         return el('div', { className: 'cm-section' },
-          el('p', { className: 'cm-empty' }, costStore?.status === 'loading' ? t('readingLedger') : t('ledgerUnavailable')))
+          el('p', { className: 'cm-empty' }, costStore?.status === 'loading' ? t('readingLedger') : t('ledgerUnavailable')),
+          costStore?.error && el('p', { className: 'cm-err', role: 'alert' }, t('ledgerReadFailed', { message: costStore.error })),
+          el('button', { className: 'cm-btn', disabled: costStore?.status === 'loading' || !api?.reload, onClick: api?.reload }, t('refresh')))
       }
       const config = state.config
 
@@ -2078,6 +2098,7 @@
             value: formatMoneyUsd(displayCostOf(state.total, config), config),
             sub: t('cardTotalSub', { calls: state.total.calls }),
           })),
+        el(ExternalUsagePanel, { state, t }),
         // 快照时点与 tokens 口径脚注(用户实测对账疑问:官方 5.64 vs 本地 5.78):
         // 防抖落盘产生分钟级时差;reasoning 由 API 单列上报但不计费,token 合计
         // 天然对不齐,引导以金额对账。
@@ -2124,7 +2145,7 @@
           ? el(UsagePanel, { state, t, locale })
           : null,
         // 按模型统计(今日/近90天:费用、token、缓存命中率、性价比)
-        el(ModelStatsPanel, { state, config: draft ?? config, t }),
+        el(ModelStatsPanel, { state, config: draft ?? config, t, draft, setDraft }),
         // Token Plan 用量统计(issue #64):每 1% 额度与满窗估算 + 日/周/月曲线
         el(PlanStatsPanel, { state, config: draft ?? config, t }),
         // 历史(三角折叠面板;日期行可再展开会话明细)
@@ -2263,6 +2284,12 @@
               }),
               el('span', null, t('hideTodayCostLabel'))),
             el('div', { className: 'cm-grid-group' }, t('groupSidebar')),
+            el('div', { className: 'cm-field' },
+              el('label', null, t('sidebarTodayMetric')),
+              el('select', { className: 'cm-input', value: draft?.sidebarTodayMetric ?? 'cost',
+                onChange: event => setField('sidebarTodayMetric', event.target.value) },
+                el('option', { value: 'cost' }, t('sidebarTodayCost')),
+                el('option', { value: 'tokens' }, t('sidebarTodayTokens')))),
             el('label', { className: 'cm-check' },
               el('input', { type: 'checkbox', checked: draft?.sidebarSimple === true,
                 onChange: event => { if (draft) setDraft({ ...draft, sidebarSimple: event.target.checked, sidebarSimplePromptSeen: true }) } }),
@@ -2572,6 +2599,11 @@
         // 官方价格同步(与价格表同组;自动保存状态已移至标签栏常驻)
         el('div', null,
           el('h3', { className: 'cm-h' }, t('dataSync')),
+          (draft ?? config).currency === 'CNY' && (draft ?? config).prices?.currency !== 'CNY'
+            ? el('div', { className: 'cm-note', role: 'status' },
+              t('pricingCnyHint', { rate: (draft ?? config).exchangeRate }),
+              (draft ?? config).pricingCurrency !== 'CNY' ? el('button', { className: 'cm-btn small', disabled: busy, onClick: () => setField('pricingCurrency', 'CNY') }, t('pricingCurrencyCny')) : null)
+            : null,
           // 官方价格币种(issue #47):决定同步抓取英文(美元)还是中文(人民币)官方页。
           el('div', { className: 'cm-field' },
             el('label', null, t('pricingCurrencyLabel')),
@@ -2625,17 +2657,24 @@
       }
       let lastPoll = Date.now()
       let reloading = false
+      let active = true, retrySeconds = 1
       const reload = async () => {
-        if (reloading) return // 并发防抖:轮询/手动刷新/重连不叠加 getState,避免乱序覆盖
+        if (!active || reloading) return // 并发防抖:轮询/手动刷新/重连不叠加 getState,避免乱序覆盖
         reloading = true
         lastPoll = Date.now()
         const prev = store.getSnapshot()
+        if (prev.state === null) store.set({ ...prev, status: 'loading' })
         try {
           const state = await call('getState')
+          if (!active) return
+          retrySeconds = 1
           store.set({ status: 'ready', error: null, state })
           // locale=auto 始终动态跟随当前浏览器语言,不要把探测结果持久化成 en/zh。
           // 否则用户切换浏览器语言后,旧的固定配置会继续覆盖浏览器语言。
         } catch (error) {
+          if (!active) return
+          if (prev.state === null) lastPoll = Date.now()
+          retrySeconds = Math.min(retrySeconds * 2, 60)
           store.set({ status: 'error', error: error?.message ?? String(error), state: prev.state })
         } finally {
           reloading = false
@@ -2645,11 +2684,12 @@
       // 侧边栏「今日费用/余额」与设置页看板依赖 getState 快照渲染,没有推送通道:
       // 默认 60s 轮询,启用模型卡片时按其 10–60s 设置(页面隐藏时跳过) + visibilitychange 重新可见时立即刷新,避免冻结在加载时刻(#3)。
       const pollTimer = setInterval(() => {
-        const cfg = store.getSnapshot().state?.config.sidebarModels
-        const seconds = cfg?.enabled || cfg?.dock ? cfg.refreshSeconds : 60
+        const state = store.getSnapshot().state, cfg = state?.config.sidebarModels
+        // 热安装首屏可早于 Host RPC 注册；失败后按 2/4/8/.../60 秒恢复，只重试读取。
+        const seconds = !state ? retrySeconds : cfg?.enabled || cfg?.dock ? cfg.refreshSeconds : 60
         if (!document.hidden && Date.now() - lastPoll >= (seconds || 60) * 1000) void reload()
       }, 1000)
-      ctx.effect(() => () => { clearInterval(pollTimer) }, 'cost-meter: poll timer')
+      ctx.effect(() => () => { active = false; clearInterval(pollTimer) }, 'cost-meter: poll timer')
       const onVisible = () => { if (document.visibilityState === 'visible') void reload() }
       document.addEventListener('visibilitychange', onVisible)
       ctx.effect(() => () => { document.removeEventListener('visibilitychange', onVisible) }, 'cost-meter: visibility reload')

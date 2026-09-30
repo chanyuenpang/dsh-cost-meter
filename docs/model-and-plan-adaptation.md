@@ -20,19 +20,15 @@
 
 ### 2. 模型名自动匹配
 
-未知模型 id 按以下顺序解析价格:
+手动覆盖(`priceOverrides`)优先；自动匹配依次接受精确名称、归一化等价和日期、版本、上下文长度后缀。不同型号及变体保持未定价，直到加入价表或手动指定。
 
-```
-精确匹配 → 手动覆盖(priceOverrides) → 归一化等价 → 宽泛包含 → 去日期/版本后缀 → 前缀(取最长) → 家族 token 相似(≥2 个前缀 token)
-```
-
-归一化:小写,忽略大小写 / 空格 / 横杠 / 下划线 / 点号,去掉括号括起的附注(如 `(go)`)。宽泛包含:请求名归一化后**包含**价格表模型名即命中(取最长候选,过短候选防误配);路由 provider(opencode / zen 等未在价格表登记)时自动跨厂商全库查找,DeepSeek 模型保留峰谷两档。
+归一化会转成小写，忽略空格、横杠、下划线和点号，并去掉括号附注（如 `(go)`）。路由 provider（opencode、zen 等未在价格表登记的渠道）可按完整模型名跨厂商查找；DeepSeek 模型仍保留峰谷两档。
 
 示例:
 
 | 请求中的模型 id | 匹配结果 |
 |---|---|
-| `gpt5.6 luna(go)` | `gpt-5.6-luna`(宽泛包含) |
+| `gpt5.6 luna(go)` | `gpt-5.6-luna`(归一化等价) |
 | `DeepSeek V4 Flash` | `deepseek-v4-flash`(归一化等价) |
 | `deepseek-v4-flash-2026-08-01` | `deepseek-v4-flash`(去日期后缀) |
 | `deepseek-chat` 等旧别名 | 不猜测,回退 DeepSeek 默认价 |
@@ -56,10 +52,10 @@
 | 阿里 Qwen | Qwen3.8 Max、3.7、3.6、3.5 Plus |
 | Kimi/Moonshot | K3、K2.7 Code、K2.6、K2.5 |
 | MiniMax | M3、M2.7、M2.5 |
-| 小米 MiMo | V2.5(+Pro) |
+| 小米 MiMo | V2.6(Pro / Flash / Pro UltraSpeed)、V2.5(+Pro,官方标注即将下线) |
 | 腾讯混元 | Hy3 |
 | OpenRouter / Mistral / NVIDIA / Upstage | 常用模型 |
-| **OpenCode Go(订阅)** | 订阅包含的非 DeepSeek **17 个模型**的官方参考单价(DeepSeek V4 Flash/Pro 以官方主表为准,不重复收录) |
+| **OpenCode Go(订阅)** | 订阅包含的非 DeepSeek 模型的官方参考单价(DeepSeek V4 Flash/Pro 以官方主表为准,不重复收录) |
 
 价格来源:以 **OpenCode Zen/Go 官方价目**(官方声明 cost-pass-through、与各厂原价一致)与各厂官方定价页交叉核对;无法核价的(如 GLM-5.3)标 `unpriced`,**不编造价格**。机器可读副本见 [`provider-pricing.json`](./provider-pricing.json)(由代码自动生成)。
 
@@ -98,7 +94,7 @@
 
 | 厂商 / 产品 | 原因 |
 |---|---|
-| 阿里云百炼 Coding Plan | 暂无 API-Key 化的公开用量端点(仅控制台) |
+| 阿里云百炼 Coding Plan | 无 API-Key 化端点；已经官方百炼 CLI（`bl usage coding-plan`）作为千问卡片第三档额度来源接入，见 docs/qwen-cli-quota.md |
 | OpenAI Codex | 用量仅随 ChatGPT 会话,无独立 API-Key 端点 |
 | Gemini Code Assist | 仅组织级 Cloud API,无个人 Key 端点 |
 | GitHub Copilot 个人版 | 用量端点需 OAuth 设备流,暂不支持 |

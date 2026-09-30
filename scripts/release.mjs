@@ -9,7 +9,7 @@
  *                                           并在 UPDATE-HISTORY 缺小节时自动补一版(不发布)
  *
  * 检查项:
- *   1. 版本号五处对齐:package.json / install.ps1(3 处)/ README.md / README.en.md(徽章 + 安装行 ×2);
+ *   1. 版本号五处对齐:package.json / install.ps1(3 处)/ README.md / README.zh-CN.md(徽章 + 安装行 ×2);
  *   2. CHANGELOG.md 有 `## [版本] - 日期` 小节;
  *   3. docs/UPDATE-HISTORY.md 有 `## v版本(日期)` 小节(缺则 --regen-notes 可自动补);
  *   4. 工作树干净、在 master、与 origin/master 同步(正式发版时)。
@@ -45,7 +45,7 @@ const read = f => readFileSync(join(repoRoot, f), 'utf8')
 const align = [
   ['install.ps1', 3, [TAG, `${TAG}/install.ps1`, `'${TAG}'`]],
   ['README.md', 3, [`version-${V}`, `${TAG}/install.ps1`, `#${TAG}`]],
-  ['README.en.md', 3, [`version-${V}`, `${TAG}/install.ps1`, `#${TAG}`]],
+  ['README.zh-CN.md', 3, [`version-${V}`, `${TAG}/install.ps1`, `#${TAG}`]],
 ]
 for (const [file, min, needles] of align) {
   const text = read(file)
@@ -59,7 +59,7 @@ for (const [file] of align) {
   const stale = [...read(file).matchAll(/v\d+\.\d+\.\d+/g)].map(m => m[0]).filter(v => v !== TAG)
   if (stale.length) fail(`${file} 残留旧版本号:${[...new Set(stale)].join(', ')}(CHANGELOG/UPDATE-HISTORY 除外,此三文件不应有)`)
 }
-log(failures ? '' : '✓ 五处版本引用对齐(install.ps1 / README.md / README.en.md)')
+log(failures ? '' : '✓ 五处版本引用对齐(install.ps1 / README.md / README.zh-CN.md)')
 
 // ── 2. CHANGELOG 小节 ────────────────────────────────────────────────────
 const changelog = read('CHANGELOG.md')
