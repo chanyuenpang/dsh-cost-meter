@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] — personal fork
+
+- Keep the compact cost footer on the same row to the right of Settings and the official upgrade/install indicator, without overlay positioning or an extra footer row.
+- Handle DSH `data-slot` / `display: contents` wrappers as well as legacy direct children; preserve other footer actions above the shared row.
+- Allow the cost amount and rings to shrink in narrow sidebars. Add browser geometry coverage for slot wrappers, native/replacement sidebars, install states, and optional built-bundle/host-style validation.
+
 ## [1.7.46] - 2026-09-30
 
 - **#201**：官方余额新增独立的开放平台 API Key 输入，写入宿主凭据库的 `DEEPSEEK_BALANCE_API_KEY`，优先于模型凭据，避免账号登录的推理令牌覆盖余额 Key。未配置时保留原有模型凭据回退。

@@ -355,17 +355,22 @@ window.__ModuleLoader__.load({
       '.cm-footer-stack.simple.rail{border:0;background:transparent}',
       '.cm-footer-stack.simple.rail .cm-bbox{padding:4px 2px}',
       '.cm-footer-stack.simple .cm-peak-rail-track,.cm-footer-stack.simple .cm-peak-rail-classic-track{height:28px}',
-      // Only the compact cost view joins the settings trigger row; other footer actions remain above it.
-      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer){position:relative}',
-      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) > :is([class*="_settingsArea"],.dbt-settings) > [class*="_triggerRow"]{box-sizing:border-box;padding-right:130px}',
-      '.cm-compact-footer{position:absolute;right:2px;bottom:11px;display:flex;align-items:center;justify-content:flex-end;gap:5px;width:124px;height:28px;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
-      '.cm-compact-item{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex:none;border-radius:7px;outline:none}',
+      // Share one grid row: Settings (including official update/install controls), then cost.
+      // SlotOutlet adds a display:contents [data-slot] DOM anchor: it is NOT transparent to CSS child selectors.
+      // Other footer actions stay above; no DOM reparenting or overlay positioning.
+      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer){display:grid;grid-template-columns:minmax(min-content,1fr) minmax(48px,124px);column-gap:4px;align-items:center}',
+      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) > :has(.cm-compact-footer){display:contents}',
+      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) > :has(.cm-compact-footer) > *,:is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) [data-slot="sidebar.footer.action"] > *{grid-column:1/-1;order:0}',
+      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) > :is([class*="_settingsArea"],.dbt-settings){grid-column:1;order:1;min-width:0}',
+      ':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) .cm-compact-footer{grid-column:2;order:2}',
+      '.cm-compact-footer{display:flex;align-items:center;justify-content:flex-end;gap:4px;width:100%;min-width:0;box-sizing:border-box;padding:4px 0;min-height:36px;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
+      '.cm-compact-item{display:inline-flex;align-items:center;justify-content:center;width:28px;min-width:20px;height:28px;flex:0 1 28px;border-radius:7px;outline:none}',
       '.cm-compact-item:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.cm-compact-item.clickable{cursor:pointer}',
       '.cm-compact-item.busy{animation:cm-click-refresh-pulse 1.1s ease-in-out infinite}',
       '.cm-compact-item:focus-visible,.cm-compact-amount:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}',
-      '.cm-compact-ring{position:relative;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center}',
-      '.cm-compact-ring > svg:first-child{width:28px;height:28px;transform:rotate(-90deg)}',
+      '.cm-compact-ring{position:relative;width:100%;height:28px;display:inline-flex;align-items:center;justify-content:center}',
+      '.cm-compact-ring > svg:first-child{width:100%;height:100%;transform:rotate(-90deg)}',
       '.cm-compact-track{stroke:var(--dsw-alias-border-l2);fill:none;stroke-width:2.5}',
       '.cm-compact-progress{fill:none;stroke:var(--dsw-alias-state-business-primary);stroke-width:2.5;stroke-linecap:round;transition:stroke-dasharray .3s ease}',
       '.cm-compact-progress.peak{stroke:#ff9800}',
@@ -373,7 +378,7 @@ window.__ModuleLoader__.load({
       '.cm-compact-progress.unavailable{stroke:transparent}',
       '.cm-compact-icon{position:absolute;width:13px;height:13px;display:block;color:var(--dsw-alias-label-primary)}',
       '.cm-compact-amount{display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;flex:1;height:28px;border-radius:6px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;outline:none}',
-      '@media (max-width:760px){.cm-compact-footer{gap:3px;width:114px}:is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer) > :is([class*="_settingsArea"],.dbt-settings) > [class*="_triggerRow"]{padding-right:120px}}',
+      '@media (max-width:760px){.cm-compact-footer{gap:3px}}',
       '@media (max-width:640px){.cm-cards{grid-template-columns:1fr}.cm-grid{grid-template-columns:1fr}.cm-budget-controls{grid-template-columns:1fr}}',
     ].join('\n')
     const cssTagId = 'dsh-cost-meter/client.css'

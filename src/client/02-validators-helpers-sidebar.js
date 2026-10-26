@@ -3059,7 +3059,7 @@
       if (!state) return null
       const config = state.config
       if (config.sidebarSimple === true) {
-        // The wide simplified view is a single compact status row beside Settings.
+        // The wide simplified view shares the footer row to the right of Settings and its update control.
         // Rail has only 56px: never crowd its settings control with three indicators.
         return wide && config.sidebar !== false
           ? el(CompactFooter, { state, codex: codexSnapshot }) : null

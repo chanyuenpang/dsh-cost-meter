@@ -8,10 +8,18 @@ import { stateSchema } from '../lib/typert.host.js'
 
 const dir = new URL('../src/client/', import.meta.url)
 const source = readdirSync(dir).filter(n => n.endsWith('.js')).sort().map(n => readFileSync(new URL(n, dir), 'utf8')).join('')
-assert.ok(source.includes('.cm-compact-ring > svg:first-child{width:28px'), '进度 SVG 的尺寸规则不能命中中间的 Codex 图标')
+assert.ok(source.includes('.cm-compact-ring > svg:first-child{width:100%'), '进度 SVG 的尺寸规则不能命中中间的 Codex 图标')
 assert.ok(source.includes('.cm-compact-icon{position:absolute;width:13px'), '品牌图标保留较小尺寸并露出圆环')
-assert.ok(source.includes(':is([class*="_footArea"],.dbt-foot):has(.cm-compact-footer){position:relative}'), '原生与替换侧栏都提供定位容器')
-assert.ok(source.includes(':is([class*="_settingsArea"],.dbt-settings) > [class*="_triggerRow"]'), '两种设置行都为圆环保留宽度')
+const compactRule = source.match(/'\.cm-compact-footer\{([^}]+)\}'/)[1]
+assert.ok(!/position:(absolute|fixed)|(?:^|;)(right|bottom):/.test(compactRule), '紧凑栏必须留在原生 footer 正常布局中，不能覆盖设置/升级入口')
+assert.ok(compactRule.includes('width:100%') && compactRule.includes('min-width:0') && compactRule.includes('box-sizing:border-box'), '页脚行随侧栏缩放，padding 不超出可用宽度')
+assert.ok(source.includes('grid-template-columns:minmax(min-content,1fr) minmax(48px,124px)'), '设置和安装提示先占据所需宽度，cost 右列可收缩')
+assert.ok(source.includes('grid-column:1;order:1;min-width:0') && source.includes('grid-column:2;order:2'), '设置在左、cost 在右，按网格顺序同排')
+assert.ok(source.includes('[data-slot="sidebar.footer.action"] > *{grid-column:1/-1;order:0}'), '真实插槽包装内的其他 footer action 仍在上方')
+assert.ok(source.includes(' > :has(.cm-compact-footer){display:contents}'), '跨过真实 SlotOutlet 包装找到 footer action 容器')
+assert.ok(!source.includes(':has(> .cm-compact-footer)'), 'display:contents 不会消除 DOM 层级，不能假设 cost 是直接子元素')
+assert.ok(!source.includes('padding-right:130px') && !source.includes('padding-right:120px'), '不再通过设置行 padding 硬编码预留覆盖空间')
+assert.ok(source.includes("name: 'sidebar.footer.action', id: 'cost-meter'"), '使用原生 footer action 插槽，保留设置行完整空间')
 let factory, hookIndex = 0, hooks = [], requests = 0, responseOk = true
 const storage = new Map()
 vm.runInNewContext(source.replace('exports.apply = apply', 'exports.test = { SidebarSimpleGuide, QuotaStripGuide, BalanceClickGuide, SidebarFooter, parseConfig, codexQuotaCache }; exports.apply = apply'), {
