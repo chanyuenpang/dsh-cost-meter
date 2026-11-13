@@ -15,3 +15,9 @@ HANDOFF.md
 .hoplite/attachments/
 
 .local-backup-*/
+
+# Local package archives and private runtime credentials are not source.
+*.tgz
+.env
+.env.local
+*.log

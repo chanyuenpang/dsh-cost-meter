@@ -2989,13 +2989,40 @@
     // the mark identifies the Codex product, not an OpenAI endorsement.
     const CODEX_COMPACT_PATH = 'M8.086.457a6.105 6.105 0 013.046-.415c1.333.153 2.521.72 3.564 1.7a.117.117 0 00.107.029c1.408-.346 2.762-.224 4.061.366l.063.03.154.076c1.357.703 2.33 1.77 2.918 3.198.278.679.418 1.388.421 2.126a5.655 5.655 0 01-.18 1.631.167.167 0 00.04.155 5.982 5.982 0 011.578 2.891c.385 1.901-.01 3.615-1.183 5.14l-.182.22a6.063 6.063 0 01-2.934 1.851.162.162 0 00-.108.102c-.255.736-.511 1.364-.987 1.992-1.199 1.582-2.962 2.462-4.948 2.451-1.583-.008-2.986-.587-4.21-1.736a.145.145 0 00-.14-.032c-.518.167-1.04.191-1.604.185a5.924 5.924 0 01-2.595-.622 6.058 6.058 0 01-2.146-1.781c-.203-.269-.404-.522-.551-.821a7.74 7.74 0 01-.495-1.283 6.11 6.11 0 01-.017-3.064.166.166 0 00.008-.074.115.115 0 00-.037-.064 5.958 5.958 0 01-1.38-2.202 5.196 5.196 0 01-.333-1.589 6.915 6.915 0 01.188-2.132c.45-1.484 1.309-2.648 2.577-3.493.282-.188.55-.334.802-.438.286-.12.573-.22.861-.304a.129.129 0 00.087-.087A6.016 6.016 0 015.635 2.31C6.315 1.464 7.132.846 8.086.457zm-.804 7.85a.848.848 0 00-1.473.842l1.694 2.965-1.688 2.848a.849.849 0 001.46.864l1.94-3.272a.849.849 0 00.007-.854l-1.94-3.393zm5.446 6.24a.849.849 0 000 1.695h4.848a.849.849 0 000-1.696h-4.848z'
 
+    /**
+     * 今日 Claude 汇总(fork 本地特性):把今日 byProviderModel 中「模型名含 claude」的
+     * 桶(如 aiclub:claude-opus-5-5、anthropic:claude-*)求和。无用量返回 null,圆环不渲染。
+     */
+    function claudeTodayOf(today) {
+      const map = today?.byProviderModel
+      if (map === null || typeof map !== 'object') return null
+      let cost = 0
+      let apiCost = 0
+      let calls = 0
+      for (const [key, bucket] of Object.entries(map)) {
+        if (bucket === null || typeof bucket !== 'object') continue
+        const sep = key.indexOf(':')
+        const model = (sep >= 0 ? key.slice(sep + 1) : key).toLowerCase()
+        if (!model.includes('claude')) continue
+        cost += Number(bucket.cost) || 0
+        apiCost += Number(bucket.apiCost ?? bucket.cost) || 0
+        calls += Number(bucket.calls) || 0
+      }
+      if (!(calls > 0) && !(cost > 0) && !(apiCost > 0)) return null
+      return { cost, apiCost, calls }
+    }
+
     function CompactRing(props) {
       const value = Number.isFinite(props.percent) ? Math.max(0, Math.min(100, props.percent)) : null
       const circumference = 2 * Math.PI * 10
       const icon = props.kind === 'codex'
         ? el('svg', { className: 'cm-compact-icon', viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': true },
           el('path', { fillRule: 'evenodd', clipRule: 'evenodd', d: CODEX_COMPACT_PATH }))
-        : el('img', { className: 'cm-compact-icon', src: '/favicon.svg', alt: '', 'aria-hidden': true })
+        : props.kind === 'claude'
+          // 原创造型:六道光芒的星形图案,用 Claude 品牌色,不复用任何第三方 logo 文件。
+          ? el('svg', { className: 'cm-compact-icon cm-compact-icon-claude', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2.2, strokeLinecap: 'round', 'aria-hidden': true },
+            el('path', { d: 'M12 3.4v17.2M4.6 7.7l14.8 8.6M19.4 7.7L4.6 16.3' }))
+          : el('img', { className: 'cm-compact-icon', src: '/favicon.svg', alt: '', 'aria-hidden': true })
       return el(Tooltip, { label: props.detail, side: 'top', delayMs: 250 },
         el('span', {
           className: 'cm-compact-item' + (props.refresh ? ' clickable' + (props.refresh.busy ? ' busy' : '') : ''),
@@ -3005,7 +3032,7 @@
           el('span', { className: 'cm-compact-ring' },
             el('svg', { viewBox: '0 0 28 28', 'aria-hidden': true },
               el('circle', { className: 'cm-compact-track', cx: 14, cy: 14, r: 10 }),
-              el('circle', { className: 'cm-compact-progress ' + (props.phase || '') + (value === null ? ' unavailable' : ''), cx: 14, cy: 14, r: 10,
+              el('circle', { className: 'cm-compact-progress ' + (props.phase || '') + (props.kind === 'claude' ? ' claude' : '') + (value === null ? ' unavailable' : ''), cx: 14, cy: 14, r: 10,
                 strokeDasharray: `${circumference * (value ?? 0) / 100} ${circumference}`, strokeDashoffset: 0 })),
             icon)))
     }
@@ -3035,11 +3062,21 @@
       const phaseRemaining = view === null ? null : Math.max(0, Math.min(100, (view.nextAtMs - now) / (8 * 3600000) * 100))
       const peakDetail = view === null ? `${t('peakShort')} / ${t('offPeakShort')} · —`
         : `${t(phaseLabelKeys(view).notice)} · ${view.nextIntoPeak ? t('nextPeakIn', { time: countdownText(view, now, t) }) : t('nextOffPeakIn', { time: countdownText(view, now, t) })} · ${new Date(view.nextAtMs).toLocaleString()}`
-      const amount = formatMoneyUsd(displayCostOf(state.today, config), config)
+      const todayDisplay = displayCostOf(state.today, config)
+      const amount = formatMoneyUsd(todayDisplay, config)
+      // Claude 圆环(fork 本地特性):今日有 claude 模型桶才渲染;占比 = 今日 Claude 费用 / 今日总费用。
+      const claude = claudeTodayOf(state.today)
+      const claudeDisplay = claude === null ? 0 : displayCostOf(claude, config)
+      const claudeShare = todayDisplay > 0 && claudeDisplay > 0 ? Math.min(100, claudeDisplay / todayDisplay * 100) : 0
+      const claudeDetail = claude === null
+        ? t('claudeNone')
+        : t('claudeRingDetail', { amount: formatMoneyUsd(claudeDisplay, config), calls: claude.calls, pct: claudeShare.toFixed(1) + '%' })
       return el('div', { className: 'cm-compact-footer' },
-        el(CompactRing, { kind: 'codex', percent: remaining, detail: codexDetail,
-          refresh: config.codexQuotaEnabled === true ? codexRefresh : null }),
-        el(CompactRing, { kind: 'dsh', percent: phaseRemaining, phase: view?.weekend ? 'weekend' : view?.inPeak ? 'peak' : '', detail: peakDetail }),
+        el('div', { className: 'cm-compact-rings' },
+          el(CompactRing, { kind: 'codex', percent: remaining, detail: codexDetail,
+            refresh: config.codexQuotaEnabled === true ? codexRefresh : null }),
+          el(CompactRing, { kind: 'dsh', percent: phaseRemaining, phase: view?.weekend ? 'weekend' : view?.inPeak ? 'peak' : '', detail: peakDetail }),
+          claude === null || config.hideTodayCost === true ? null : el(CompactRing, { kind: 'claude', percent: claudeShare, detail: claudeDetail })),
         config.hideTodayCost === true ? null : el(Tooltip, { label: `${t('todayCostTitle')} · ${amount}`, side: 'top', delayMs: 250 },
           el('span', { className: 'cm-compact-amount', tabIndex: 0, 'aria-label': `${t('todayCostTitle')} ${amount}` }, amount)))
     }

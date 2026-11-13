@@ -2,6 +2,8 @@
 
 ## [Unreleased] — personal fork
 
+- Add a Claude ring to the compact cost footer: it sums today's `byProviderModel` buckets whose model id contains `claude` (e.g. `aiclub:claude-opus-5-5`), draws the Claude share of today's spend, and shows the amount, call count and share on hover. Hidden when today has no Claude usage or when today's cost is hidden.
+- Re-lay out the compact cost footer as two right-aligned rows (rings above, amount below), shrink the rings to 22px, and cap the footer at 104px with `overflow: hidden`, so three rings no longer squeeze the amount or spill over the Settings row and its official upgrade control.
 - Keep the compact cost footer on the same row to the right of Settings and the official upgrade/install indicator, without overlay positioning or an extra footer row.
 - Handle DSH `data-slot` / `display: contents` wrappers as well as legacy direct children; preserve other footer actions above the shared row.
 - Allow the cost amount and rings to shrink in narrow sidebars. Add browser geometry coverage for slot wrappers, native/replacement sidebars, install states, and optional built-bundle/host-style validation.
