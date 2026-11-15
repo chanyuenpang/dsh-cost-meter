@@ -383,6 +383,7 @@ window.__ModuleLoader__.load({
       '.cm-footer-stack.text-only:not(.rail) .cm-mm>.cm-mm-title,.cm-footer-stack.text-only:not(.rail) .cm-codex-head,.cm-footer-stack.text-only:not(.rail) .cm-mm-reset{flex:1 0 100%;min-width:0}',
       '.cm-footer-stack.text-only:not(.rail) .cm-mm-row:not(.cm-mm-title){gap:4px;padding:0;min-width:0;max-width:100%}',
       '.cm-footer-stack.text-only .cm-mm-row .cm-bbox-label{max-width:115px;flex:0 1 auto}.cm-footer-stack.text-only .cm-mm-row .cm-bbox-pct{min-width:0}',
+      '.cm-icon-host{display:flex;align-self:flex-end;align-items:center;justify-content:flex-end;min-height:40px;max-width:104px;overflow:hidden}.cm-icon-host>button{min-width:24px;min-height:24px;border:0;background:transparent;color:inherit;cursor:pointer}',
       '@media (max-width:640px){.cm-cards{grid-template-columns:1fr}.cm-grid{grid-template-columns:1fr}.cm-budget-controls{grid-template-columns:1fr}}',
       // ── dsh-pocket 手机端适配(task-10):双判据 —— @media (max-width:1023px) 覆盖真实窄屏,
       //    data-dsh-pocket-layout="mobile" 覆盖宽屏强制移动布局;两条判据都只新增覆盖,桌面不变。──

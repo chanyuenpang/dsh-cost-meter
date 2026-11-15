@@ -7073,6 +7073,7 @@ await import('./billing-check.mjs')
 
 await import('./coding-plan-placeholder.mjs')
 await import('./local-savings.mjs')
+await import('./compact-icons.mjs')
 
 // Drain any remaining async host disposers before the synchronous exit cleanup.
 await removeFixture(suiteRoot, { recursive: true, force: true })

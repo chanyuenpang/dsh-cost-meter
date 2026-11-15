@@ -14,6 +14,8 @@
 
 Track costs and tokens by conversation, model and call. View account balances, subscription quotas and budgets together, with separate API charges and Plan equivalents, multi-provider pricing, peak/off-peak alerts, and configurable sidebar and composer displays.
 
+**Personal build `1.9.65-veewo.1`:** upstream 1.9.65 plus an independent **Compact icons** sidebar layout (Display → Sidebar layout). The old personal Simple preference migrates once; upstream layouts remain available. Billing and storage stay upstream. Installation commands below refer to the official release, not this local tarball.
+
 <p align="center">
   <img src="docs/promo.en.png" alt="Whale-themed project illustration" width="1280">
   <br><sub>Project illustration</sub>

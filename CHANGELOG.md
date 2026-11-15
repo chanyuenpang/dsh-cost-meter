@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.9.65-veewo.1] - 2026-11-15 — personal build
+
+- 基于上游 1.9.65，仅增加独立的“简约图标”侧栏布局：Codex 剩余额度、峰谷倒计时、Claude 今日占比和金额两行显示。标准、紧凑和上游简洁布局保留。
+- 旧个人版的简约偏好一次性迁移到 `sidebarStyle: icons`；计费、额度读取、UTC 峰谷、历史价格与存储沿用上游。图标块按需加载，不增加额度轮询。
+- Keep upstream 1.9.65 billing and storage; restore only the personal compact-icon footer as a separate layout. The build uses lossless CSS packing and keeps every runtime asset below 256 KiB.
+
 ## [1.9.65] - 2026-11-14
 
 - 输入区套餐进度条新增“显示套餐余额”开关，默认开启。关闭后保留进度条，余额可在悬浮提示中查看，预览和保存状态同步。

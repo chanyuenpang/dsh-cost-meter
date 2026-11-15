@@ -36,6 +36,7 @@
           const num = x => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : 0)
           out[key] = {
             ...parseFrozenMoney(raw),
+            ...(Object.hasOwn(raw, 'calls') ? { calls: num(raw.calls) } : {}),
             ...mapFields(raw, ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'cost'], num),
             // API 渠道金额(issue #64):缺席 = 旧数据按 cost 全额 API 口径。
             apiCost: raw.apiCost === undefined ? num(raw.cost) : num(raw.apiCost),
@@ -157,7 +158,7 @@
         // Codex 订阅兼容(契约 B-5):用户已关闭一次性提示 / 已应用历史归类的时点。
         // 直通白名单缺失会导致关闭后重开页面又弹提示,或应用后状态行回落「未应用」。
         codexCompatHistoryAppliedAt: num0(v.codexCompatHistoryAppliedAt),
-        sidebarStyle: oneOf(v.sidebarStyle, ['standard', 'compact', 'summary'], 'standard'),
+        sidebarStyle: oneOf(v.sidebarStyle, ['standard', 'compact', 'summary', 'icons'], 'standard'),
         planQuotaStyle: v.planQuotaStyle === 'gauge' ? 'gauge' : 'bars',
         ...mapFields(v, ['sidebarSimplePromptSeen', 'sidebarSummaryPromptSeen', 'peakProgressPromptSeen'].filter(key => Object.hasOwn(v, key)), value => value === true),
         billionContextNoticeEnabled: v.billionContextNoticeEnabled !== false,
@@ -3557,6 +3558,11 @@
           wide ? el(Fragment, null, el('span', null, t('today')), el('span', { className: 'cm-num cm-bal-amt' }, todayValue)) : el(WalletIcon, { size: 16 })))
     }
 
+    const loadCompactIcons = () => require.async('./client.compact-icons.js').then(module => module.mount({
+      Tooltip, makeT, resolveLocale, displayCostOf, formatMoneyUsd, peakView, usePeakClock, phaseLabelKeys,
+      countdownText, codexQuotaSnapshot, fetchCodexQuota, useClickRefresh, clickableRefreshProps, clickRefreshTipLines,
+    }))
+
     function SidebarFooter(props) {
       const costStore = props.useCost ? props.useCost(s => s) : undefined
       useCodexQuota(costStore?.state?.config?.codexQuotaEnabled === true && costStore?.state?.config?.codexQuotaSidebar !== false, costStore?.state?.config?.codexQuotaSource)
@@ -3575,6 +3581,7 @@
     // Shared presentation only: no store, projection or quota subscription.
     function renderSidebarFooter(state, wide, api, preview = false, provider) {
       const config = peakConfigForState(state)
+      if (config.sidebarStyle === 'icons' && !config.sidebarSimple) return wide ? el('div', { className: 'cm-compact-footer cm-icon-host' }, el(BillingStatistics, { load: loadCompactIcons, iconFooter: true, state: { ...state, config }, preview })) : null
       const t = makeT(resolveLocale(config))
       const showBalance = (config.balance?.display === 'sidebar' || config.balance?.display === 'both')
         && config.hideOfficialBalance !== true && officialBalanceVisible(state, provider, preview)

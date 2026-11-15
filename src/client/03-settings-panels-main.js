@@ -32,6 +32,10 @@
         return () => { active = false }
       }, [props.api, props.load, retry])
       if (Page) return el(Page, { ...props, formatMoneyUsd, formatTokens, resolveLocale })
+      if (props.iconFooter) return el(error ? 'button' : 'span', {
+        ...(error ? { type: 'button', onClick: () => setRetry(n => n + 1), title: error } : { role: 'status' }),
+        'aria-label': resolveLocale(props.state?.config) === 'en' ? error ? 'Retry icon layout' : 'Loading icon layout' : error ? '重试图标布局' : '正在加载图标布局',
+      }, error ? '↻' : '…')
       if (props.quiet) return null
       return el('div', { className: error ? '' : 'cm-loading', role: error ? 'alert' : 'status', 'aria-label': resolveLocale(props.state?.config) === 'en' ? 'Loading' : '正在读取' }, error || el(Fragment, null, el('i'), el('i'), el('i')), error ? el('button', { className: 'cm-btn', onClick: () => setRetry(n => n + 1) }, '↻') : null)
     }
@@ -1906,7 +1910,7 @@
           renderSidebar: (preview, data = state) => renderSidebarFooter({ ...data, config: preview }, true, undefined, true),
           renderCorner: data => el(CornerChips, { useCost: () => ({ state: data }) }),
           renderStyleSample: (preview, data = state, examples = true) => {
-            if (!examples) return renderSidebarFooter({ ...data, config: preview }, true, undefined, true)
+            if (!examples || preview.sidebarStyle === 'icons') return renderSidebarFooter({ ...data, config: preview }, true, undefined, true)
             const simple = preview.sidebarSimple === true
             const sampleConfig = { ...preview, peakNotice: false, hideBudget: false, hideTodayCost: false,
               budget: { ...preview.budget, enabled: true, amount: Number(preview.budget?.amount) > 0 ? preview.budget.amount : 100 } }
